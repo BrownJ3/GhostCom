@@ -1,3 +1,4 @@
+use crate::install_scripts::{INSTALL_PS1, INSTALL_SH};
 use crate::page::INDEX_HTML;
 use crate::relay::{RelayState, relay_ws};
 use crate::rendezvous::{RendezvousState, rendezvous_ws};
@@ -7,9 +8,6 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::get,
 };
-
-const INSTALL_SH: &str = include_str!("../../install/install.sh");
-const INSTALL_PS1: &str = include_str!("../../install/install.ps1");
 
 pub fn app() -> Router {
     let public_routes = Router::new()
