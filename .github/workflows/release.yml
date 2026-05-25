@@ -22,10 +22,6 @@ jobs:
             target: aarch64-apple-darwin
             archive: ghstprtcl-aarch64-apple-darwin.tar.gz
             binary: ghstprtcl
-          - os: macos-13
-            target: x86_64-apple-darwin
-            archive: ghstprtcl-x86_64-apple-darwin.tar.gz
-            binary: ghstprtcl
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             archive: ghstprtcl-x86_64-unknown-linux-gnu.tar.gz

@@ -7,20 +7,18 @@ GhostCom must feel like the same tool on macOS, Windows, and Linux. The first re
 Initial support target:
 
 ```text
-macOS x86_64
 macOS aarch64
 Windows x86_64
 Linux x86_64
 ```
 
-Linux aarch64 is a desirable later target, but the initial automated release workflow focuses on the common desktop platforms first.
+macOS x86_64 and Linux aarch64 are desirable later targets, but the initial automated release workflow focuses on platforms that build reliably in the current GitHub Actions setup.
 
 ## Distribution Goal
 
 Each release should provide standalone binaries where practical:
 
 ```text
-ghstprtcl-x86_64-apple-darwin.tar.gz
 ghstprtcl-aarch64-apple-darwin.tar.gz
 ghstprtcl-x86_64-pc-windows-msvc.zip
 ghstprtcl-x86_64-unknown-linux-gnu.tar.gz
