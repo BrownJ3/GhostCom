@@ -1,2 +1,16 @@
 /target/
 /site/target/
+
+# Local secrets and machine-specific config.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.csr
+*.token
+secrets.*
+fly-secrets.*
