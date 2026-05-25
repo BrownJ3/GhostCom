@@ -26,7 +26,8 @@ repository is opened:
 - Fly app hostname: `ghostcom-site.fly.dev`.
 - Default relay endpoint: `wss://ghostcom-site.fly.dev/relay`.
 - Default rendezvous endpoint: `wss://ghostcom-site.fly.dev/rv`.
-- Commit author metadata currently shows `Josh Brown <joshbr@Mac.lan>`.
+- Commit author metadata has been rewritten to
+  `GhostCom Maintainers <noreply@ghostcom.local>`.
 
 These are not application secrets, but they do identify the project, deployment
 target, and commit author.
@@ -40,8 +41,8 @@ verification, rate limiting, and signed distribution.
 
 ## Before Making Public
 
-- Decide whether exposing the commit author metadata is acceptable. If not,
-  rewrite history before making the repository public.
+- Keep local Git identity configured to non-personal project metadata before
+  making future commits.
 - Decide whether the public `/install.sh` and `/install.ps1` endpoints fit the
   desired site posture.
 - Sign release checksums before broad public distribution.
