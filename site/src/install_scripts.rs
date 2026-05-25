@@ -2,7 +2,7 @@ pub const INSTALL_SH: &str = r#"#!/bin/sh
 set -eu
 
 REPO="${GHSTPRTCL_REPO:-BrownJ3/GhostCom}"
-VERSION="${GHSTPRTCL_VERSION:-latest}"
+VERSION="${GHSTPRTCL_VERSION:-v0.1.0-alpha.3}"
 INSTALL_DIR="${GHSTPRTCL_INSTALL_DIR:-$HOME/.local/bin}"
 
 need() {
@@ -76,7 +76,7 @@ echo "Run: ghstprtcl"
 pub const INSTALL_PS1: &str = r#"$ErrorActionPreference = "Stop"
 
 $Repo = if ($env:GHSTPRTCL_REPO) { $env:GHSTPRTCL_REPO } else { "BrownJ3/GhostCom" }
-$Version = if ($env:GHSTPRTCL_VERSION) { $env:GHSTPRTCL_VERSION } else { "latest" }
+$Version = if ($env:GHSTPRTCL_VERSION) { $env:GHSTPRTCL_VERSION } else { "v0.1.0-alpha.3" }
 $InstallDir = if ($env:GHSTPRTCL_INSTALL_DIR) { $env:GHSTPRTCL_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "ghstprtcl\bin" }
 
 if (-not [Environment]::Is64BitOperatingSystem) {
