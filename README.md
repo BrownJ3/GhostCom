@@ -114,7 +114,7 @@ See [docs/cross-platform.md](docs/cross-platform.md) for platform and release ex
 
 ## Installer Plan
 
-Release builds are published through GitHub Releases when a `v*` tag is pushed. The workflow builds standalone `ghstprtcl` binaries for macOS, Windows, and Linux, publishes `SHA256SUMS`, and generates GitHub artifact attestations.
+Release builds are published through GitHub Releases when a `v*` tag is pushed. The workflow builds standalone `ghstprtcl` binaries for macOS, Windows, and Linux, publishes `SHA256SUMS`, and attempts GitHub artifact attestations where supported.
 
 Once the first release exists, install commands will be:
 

@@ -71,6 +71,7 @@ jobs:
           path: ${{ matrix.archive }}
 
       - name: Attest package provenance
+        continue-on-error: true
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: ${{ matrix.archive }}
