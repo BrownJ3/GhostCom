@@ -66,8 +66,22 @@ Before release, CI should include:
 - `cargo test`
 - `cargo audit`
 - `cargo deny`
+- release checksum generation
+- release provenance attestation
 
 Security-sensitive dependencies should be few, actively maintained, and pinned through `Cargo.lock` for releases.
+
+## Distribution Security
+
+Prebuilt binaries are part of the security boundary. A simple install flow must not bypass verification.
+
+Release assets should be published through GitHub Releases with:
+
+- Per-asset SHA-256 checksums.
+- GitHub artifact provenance attestations.
+- A documented upgrade path to detached signature verification before broad production claims.
+
+Installer scripts must verify checksums before copying binaries into a user path. Checksums downloaded from the same release primarily protect against corruption and mismatched assets; stronger tamper resistance requires signed checksums or binary signatures.
 
 ## Rendezvous Security
 

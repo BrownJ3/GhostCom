@@ -86,6 +86,9 @@ This checklist must be reviewed before any release that claims to be secure or p
 
 - Release build is reproducible enough for project needs.
 - Binaries are checksummed.
+- Installer scripts verify checksums before installing.
+- Release provenance attestations are published where supported.
+- Detached signatures or signed checksums are planned before production-grade distribution claims.
 - Release notes describe security-relevant changes.
 - Known limitations are documented.
 - The project does not claim external audit unless one has happened.

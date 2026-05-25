@@ -11,22 +11,24 @@ macOS x86_64
 macOS aarch64
 Windows x86_64
 Linux x86_64
-Linux aarch64
 ```
+
+Linux aarch64 is a desirable later target, but the initial automated release workflow focuses on the common desktop platforms first.
 
 ## Distribution Goal
 
 Each release should provide standalone binaries where practical:
 
 ```text
-ghostcom-macos-x86_64
-ghostcom-macos-aarch64
-ghostcom-windows-x86_64.exe
-ghostcom-linux-x86_64
-ghostcom-linux-aarch64
+ghstprtcl-x86_64-apple-darwin.tar.gz
+ghstprtcl-aarch64-apple-darwin.tar.gz
+ghstprtcl-x86_64-pc-windows-msvc.zip
+ghstprtcl-x86_64-unknown-linux-gnu.tar.gz
 ```
 
 Package managers can come later. The first goal is a downloadable binary that runs from a terminal.
+
+Install scripts may be served from the GhostCom site, but they must download binaries from GitHub Releases and verify the published SHA-256 checksum before installation. Future releases should add stronger signature verification before claiming production-grade distribution security.
 
 ## Terminal Behavior
 
@@ -52,14 +54,27 @@ The first UI should be line-oriented before introducing a full-screen TUI.
 
 ## Networking Behavior
 
+The release binary is named `ghstprtcl`. Running it without arguments opens the menu:
+
+```text
+ghstprtcl
+```
+
 The first release supports direct connections:
 
 ```text
-peer A: ghostcom listen --bind 0.0.0.0:7777
-peer B: ghostcom connect <host>:7777
+peer A: ghstprtcl listen --bind 0.0.0.0:7777
+peer B: ghstprtcl connect <host>:7777
 ```
 
-Users may need to configure firewalls, port forwarding, VPN, Tailscale, WireGuard, or another private network. GhostCom should explain connection failures clearly but should not add relay infrastructure in the first release.
+Users may need to configure firewalls, port forwarding, VPN, Tailscale, WireGuard, or another private network for direct mode. For cross-network use where direct reachability fails, GhostCom supports relay mode:
+
+```text
+peer A: ghstprtcl relay-call --relay wss://ghostcom-site.fly.dev/relay
+peer B: ghstprtcl relay-join <invite-code> --relay wss://ghostcom-site.fly.dev/relay
+```
+
+Relay mode must be described precisely: the relay cannot decrypt chat contents when users verify the Noise code, but it can observe connection metadata.
 
 ## Filesystem Behavior
 
@@ -80,7 +95,11 @@ Before publishing binaries, run smoke tests on all supported platforms:
 
 - Start listener.
 - Connect from another terminal.
+- Start relay call through the deployed relay.
+- Join relay call through the deployed relay.
 - Verify shared session code prompt.
 - Send messages both directions.
 - Close from each side.
 - Confirm no application files were created.
+- Download release assets.
+- Verify each asset against `SHA256SUMS`.

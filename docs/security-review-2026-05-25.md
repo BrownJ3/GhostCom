@@ -156,6 +156,9 @@ Security impact: medium for privacy.
 - Add fuzzing for frame parsing and rendezvous JSON parsing.
 - Add cross-platform CI.
 - Add release build checksums.
+- Add installer checksum verification.
+- Add release provenance attestation.
+- Add signed checksums or detached binary signatures before production-grade distribution claims.
 - Commission external security review.
 
 ## Acceptable Current Claims

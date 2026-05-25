@@ -52,6 +52,8 @@ fly deploy
 
 - The service reads `PORT`, which Fly provides.
 - The page is embedded in the Rust binary.
+- `/install.sh` serves the macOS/Linux installer script.
+- `/install.ps1` serves the Windows installer script.
 - The rendezvous service uses in-memory rooms only.
 - Invite codes expire after five minutes.
 - Invite codes are one-time use.
@@ -84,3 +86,9 @@ cargo run -- relay-join <invite-code> --relay wss://your-app.fly.dev/relay
 ```
 
 Relay mode is for peers that cannot directly reach each other. The relay is still untrusted; clients perform a Noise handshake through it and verify a shared session code before chat.
+
+## Install Script Surface
+
+The install script endpoints are intentionally plain files and are not linked from the public page. They download release assets from GitHub Releases and verify `SHA256SUMS` before installing `ghstprtcl`.
+
+If releases are private, these scripts will not work for unauthenticated users. For easy installs by anyone, publish public release assets or serve authenticated downloads through a separate design.

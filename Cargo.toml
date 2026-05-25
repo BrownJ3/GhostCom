@@ -5,6 +5,10 @@ edition = "2024"
 license = "UNLICENSED"
 publish = false
 
+[[bin]]
+name = "ghstprtcl"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0"
 futures-util = "0.3"

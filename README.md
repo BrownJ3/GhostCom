@@ -20,15 +20,15 @@ GhostCom is designed as an ephemeral secure communication tool, not a general me
 - No accounts.
 - No cloud sync.
 - No offline messages.
-- No server-side message relay in the first release.
 - No group chat in the first release.
 - No file transfer in the first release.
 - No persistent identity by default.
 - No custom cryptographic protocol.
+- No claim that the relay hides network metadata such as IP address, timing, or traffic volume.
 
 ## Security Model
 
-GhostCom should use proven cryptographic libraries and protocols rather than inventing its own. The first production-oriented MVP should use mutually authenticated TLS 1.3 through `rustls`, with short-lived session state and manual peer verification.
+GhostCom should use proven cryptographic libraries and protocols rather than inventing its own. Direct connections use mutually authenticated TLS 1.3 through `rustls`. Relay connections use an end-to-end Noise session through `snow`; the relay forwards opaque binary frames and never receives chat plaintext or session keys.
 
 See [SECURITY.md](SECURITY.md), [docs/threat-model.md](docs/threat-model.md), [docs/architecture.md](docs/architecture.md), and [docs/security-checklist.md](docs/security-checklist.md) before making protocol or storage changes.
 
@@ -39,6 +39,14 @@ Build the development binary:
 ```text
 cargo build
 ```
+
+Run the user-facing menu:
+
+```text
+cargo run
+```
+
+The release binary is named `ghstprtcl`. Running it with no arguments starts a small menu for starting or joining a relay chat.
 
 Start a listener in one terminal:
 
@@ -81,12 +89,13 @@ closes the session.
 ## CLI Shape
 
 ```text
-ghostcom call --rendezvous wss://your-site.fly.dev/rv
-ghostcom join <invite-code> --rendezvous wss://your-site.fly.dev/rv
-ghostcom relay-call --relay wss://ghostcom-site.fly.dev/relay
-ghostcom relay-join <invite-code> --relay wss://ghostcom-site.fly.dev/relay
-ghostcom listen --bind 0.0.0.0:7777
-ghostcom connect <host>:7777
+ghstprtcl
+ghstprtcl call --rendezvous wss://your-site.fly.dev/rv
+ghstprtcl join <invite-code> --rendezvous wss://your-site.fly.dev/rv
+ghstprtcl relay-call --relay wss://ghostcom-site.fly.dev/relay
+ghstprtcl relay-join <invite-code> --relay wss://ghostcom-site.fly.dev/relay
+ghstprtcl listen --bind 0.0.0.0:7777
+ghstprtcl connect <host>:7777
 ```
 
 During connection setup, both peers see a shared verification code. Users must compare that value out-of-band before trusting the session.
@@ -102,6 +111,24 @@ GhostCom should build and run on:
 The terminal experience should avoid platform-specific assumptions where possible. Any platform-specific behavior must be documented and tested.
 
 See [docs/cross-platform.md](docs/cross-platform.md) for platform and release expectations.
+
+## Installer Plan
+
+Release builds are published through GitHub Releases when a `v*` tag is pushed. The workflow builds standalone `ghstprtcl` binaries for macOS, Windows, and Linux, publishes `SHA256SUMS`, and generates GitHub artifact attestations.
+
+Once the first release exists, install commands will be:
+
+```text
+curl -fsSL https://ghostcom-site.fly.dev/install.sh | sh
+```
+
+Windows PowerShell:
+
+```text
+irm https://ghostcom-site.fly.dev/install.ps1 | iex
+```
+
+The scripts download release assets from GitHub and verify SHA-256 checksums before installing. If the GitHub repository or release assets are private, users must authenticate to GitHub or install from a manually downloaded asset.
 
 ## Development Status
 

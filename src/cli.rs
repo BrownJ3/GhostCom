@@ -1,8 +1,9 @@
 use anyhow::{Result, bail};
+use std::io::{self, Write};
 use std::net::SocketAddr;
 
-const DEFAULT_RENDEZVOUS_URL: &str = "ws://127.0.0.1:8080/rv";
-const DEFAULT_RELAY_URL: &str = "ws://127.0.0.1:8080/relay";
+const DEFAULT_RENDEZVOUS_URL: &str = "wss://ghostcom-site.fly.dev/rv";
+const DEFAULT_RELAY_URL: &str = "wss://ghostcom-site.fly.dev/relay";
 
 pub enum Command {
     RelayCall {
@@ -31,8 +32,7 @@ pub enum Command {
 pub fn parse() -> Result<Command> {
     let mut args = std::env::args().skip(1);
     let Some(command) = args.next() else {
-        print_usage();
-        bail!("missing command");
+        return interactive_menu();
     };
 
     match command.as_str() {
@@ -146,6 +146,54 @@ pub fn parse() -> Result<Command> {
 
 fn print_usage() {
     eprintln!(
-        "GhostCom\n\nUsage:\n  ghostcom relay-call [--relay ws://127.0.0.1:8080/relay]\n  ghostcom relay-join <invite-code> [--relay ws://127.0.0.1:8080/relay]\n  ghostcom call [--bind 0.0.0.0:7777] [--rendezvous ws://127.0.0.1:8080/rv]\n  ghostcom join <invite-code> [--rendezvous ws://127.0.0.1:8080/rv]\n  ghostcom listen [--bind 0.0.0.0:7777]\n  ghostcom connect <host>:7777"
+        "GhostCom\n\nUsage:\n  ghstprtcl\n  ghstprtcl relay-call [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-join <invite-code> [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl call [--bind 0.0.0.0:7777] [--rendezvous {DEFAULT_RENDEZVOUS_URL}]\n  ghstprtcl join <invite-code> [--rendezvous {DEFAULT_RENDEZVOUS_URL}]\n  ghstprtcl listen [--bind 0.0.0.0:7777]\n  ghstprtcl connect <host>:7777"
     );
+}
+
+fn interactive_menu() -> Result<Command> {
+    println!("GhostCom");
+    println!();
+    println!("1. Start secure chat");
+    println!("2. Join secure chat");
+    println!("3. Listen directly");
+    println!("4. Connect directly");
+    println!();
+
+    match prompt("Choose [1]: ")?.trim() {
+        "" | "1" => Ok(Command::RelayCall {
+            relay: DEFAULT_RELAY_URL.to_string(),
+        }),
+        "2" => {
+            let code = prompt("Invite code: ")?;
+            let code = code.trim().to_string();
+            if code.is_empty() {
+                bail!("invite code is required");
+            }
+            Ok(Command::RelayJoin {
+                code,
+                relay: DEFAULT_RELAY_URL.to_string(),
+            })
+        }
+        "3" => Ok(Command::Listen {
+            bind: "0.0.0.0:7777".parse()?,
+        }),
+        "4" => {
+            let target = prompt("Peer address, for example 192.168.1.20:7777: ")?;
+            let target = target.trim().to_string();
+            if target.is_empty() {
+                bail!("peer address is required");
+            }
+            Ok(Command::Connect { target })
+        }
+        other => bail!("unknown menu option: {other}"),
+    }
+}
+
+fn prompt(label: &str) -> Result<String> {
+    print!("{label}");
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input)
 }

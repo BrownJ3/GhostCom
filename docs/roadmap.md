@@ -33,6 +33,7 @@ This roadmap prioritizes a small, secure, cross-platform command-line chat befor
 - Add shutdown cleanup tests.
 - Add hosting-level DDoS protection guidance.
 - Add configurable rendezvous rate limits.
+- Add configurable relay rate limits.
 - Add dependency audit tooling.
 - Add fuzzing for frame parsing.
 - Add fuzzing for rendezvous JSON parsing.
@@ -45,6 +46,8 @@ This roadmap prioritizes a small, secure, cross-platform command-line chat befor
 - Add clearer connection instructions.
 - Add optional QR or copyable verification code display if it does not add persistence.
 - Add packaging for common install paths.
+- Add checksum-verified install scripts.
+- Add signed release verification.
 
 ## Phase 4: Security Review Readiness
 
@@ -61,7 +64,6 @@ These are intentionally deferred because they expand the threat model:
 
 - Persistent identities.
 - Contact book.
-- Relay servers.
 - NAT traversal.
 - Group chat.
 - File transfer.
