@@ -4,11 +4,14 @@ use crate::terminal::line_ui::{
     spawn_chat_input_reader, typing_enabled,
 };
 use anyhow::{Result, bail};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use snow::{Builder, TransportState, params::NoiseParams};
+use subtle::ConstantTimeEq;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
+use zeroize::Zeroize;
 
 type RelaySocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -16,6 +19,8 @@ const MAX_RELAY_SETUP_BYTES: usize = 512;
 const MAX_NOISE_MESSAGE_BYTES: usize = 32 * 1024;
 const MAX_CHAT_MESSAGE_BYTES: usize = 8 * 1024;
 const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
+const INVITE_SECRET_BYTES: usize = 32;
+const INVITE_AUTH_PROOF_BYTES: usize = 32;
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -41,25 +46,28 @@ pub enum RelayRole {
 
 pub async fn call(relay_url: String) -> Result<()> {
     println!("Creating relay invite...");
-    let socket = create_relay(&relay_url).await?;
-    run_noise_chat(socket, RelayRole::Caller).await
+    let secret = InviteSecret::generate();
+    let socket = create_relay(&relay_url, &secret).await?;
+    run_noise_chat(socket, RelayRole::Caller, Some(secret)).await
 }
 
 pub async fn join(code: String, relay_url: String) -> Result<()> {
     println!("Joining relay invite...");
-    let socket = join_relay(&relay_url, &code).await?;
-    run_noise_chat(socket, RelayRole::Joiner).await
+    let invite = RelayInvite::parse(&code)?;
+    let socket = join_relay(&relay_url, invite.room_code()).await?;
+    run_noise_chat(socket, RelayRole::Joiner, invite.into_secret()).await
 }
 
-async fn create_relay(relay_url: &str) -> Result<RelaySocket> {
+async fn create_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySocket> {
     let (mut socket, _) = connect_async(relay_url).await?;
     send_setup(&mut socket, ClientMessage::Create).await?;
 
     match read_setup(&mut socket).await? {
         ServerMessage::Created { code } => {
+            validate_relay_code(&code)?;
             println!();
             println!("Relay invite code:");
-            println!("  {code}");
+            println!("  {}", RelayInvite::format(&code, secret));
             println!();
             println!("Share this code with your peer. Waiting for them to join...");
         }
@@ -107,10 +115,18 @@ async fn join_relay(relay_url: &str, code: &str) -> Result<RelaySocket> {
     }
 }
 
-async fn run_noise_chat(mut socket: RelaySocket, role: RelayRole) -> Result<()> {
-    let (mut transport, verification_code) = noise_handshake(&mut socket, role).await?;
+async fn run_noise_chat(
+    mut socket: RelaySocket,
+    role: RelayRole,
+    invite_secret: Option<InviteSecret>,
+) -> Result<()> {
+    let (mut transport, handshake_hash, verification_code) =
+        noise_handshake(&mut socket, role).await?;
 
-    if !confirm_peer(&verification_code).await? {
+    if let Some(secret) = invite_secret {
+        verify_invite_secret(&mut socket, &mut transport, role, &secret, &handshake_hash).await?;
+        println!("Invite verified end-to-end.");
+    } else if !confirm_peer(&verification_code).await? {
         bail!("session verification was not confirmed");
     }
 
@@ -121,6 +137,7 @@ async fn run_noise_chat(mut socket: RelaySocket, role: RelayRole) -> Result<()> 
         match read_encrypted(&mut socket, &mut transport).await? {
             RelayFrame::Hello(name) => break name,
             RelayFrame::Close => bail!("peer closed before sending display name"),
+            RelayFrame::InviteProof(_) => bail!("unexpected invite proof"),
             RelayFrame::Chat(_) => {}
             RelayFrame::TypingStart | RelayFrame::TypingStop => {}
         }
@@ -132,7 +149,7 @@ async fn run_noise_chat(mut socket: RelaySocket, role: RelayRole) -> Result<()> 
 async fn noise_handshake(
     socket: &mut RelaySocket,
     role: RelayRole,
-) -> Result<(TransportState, String)> {
+) -> Result<(TransportState, Vec<u8>, String)> {
     let params: NoiseParams = NOISE_PATTERN.parse()?;
     let builder = Builder::new(params);
     let static_key = builder.generate_keypair()?.private;
@@ -162,8 +179,41 @@ async fn noise_handshake(
         }
     }
 
-    let verification_code = format_verification_code(noise.get_handshake_hash());
-    Ok((noise.into_transport_mode()?, verification_code))
+    let handshake_hash = noise.get_handshake_hash().to_vec();
+    let verification_code = format_verification_code(&handshake_hash);
+    Ok((
+        noise.into_transport_mode()?,
+        handshake_hash,
+        verification_code,
+    ))
+}
+
+async fn verify_invite_secret(
+    socket: &mut RelaySocket,
+    transport: &mut TransportState,
+    role: RelayRole,
+    secret: &InviteSecret,
+    handshake_hash: &[u8],
+) -> Result<()> {
+    let local_proof = invite_auth_proof(secret, handshake_hash, role.local_auth_label());
+    send_encrypted(socket, transport, &RelayFrame::InviteProof(local_proof)).await?;
+
+    let expected_peer_proof = invite_auth_proof(secret, handshake_hash, role.peer_auth_label());
+    match read_encrypted(socket, transport).await? {
+        RelayFrame::InviteProof(peer_proof) => {
+            if peer_proof.ct_eq(&expected_peer_proof).into() {
+                return Ok(());
+            }
+            bail!("invite authentication failed");
+        }
+        RelayFrame::Close => bail!("peer closed before invite authentication"),
+        RelayFrame::Hello(_)
+        | RelayFrame::Chat(_)
+        | RelayFrame::TypingStart
+        | RelayFrame::TypingStop => {
+            bail!("peer sent chat data before invite authentication");
+        }
+    }
 }
 
 async fn run_chat_loop(
@@ -217,6 +267,7 @@ async fn run_chat_loop(
             frame = read_encrypted(&mut socket, &mut transport) => {
                 match frame? {
                     RelayFrame::Hello(_) => {}
+                    RelayFrame::InviteProof(_) => bail!("unexpected invite proof"),
                     RelayFrame::Chat(message) => {
                         typing_indicator.stop()?;
                         chat_println(&format!("{peer_name}> {}", sanitize_for_terminal(&message)))?;
@@ -245,6 +296,7 @@ async fn run_chat_loop(
 }
 
 enum RelayFrame {
+    InviteProof([u8; INVITE_AUTH_PROOF_BYTES]),
     Hello(String),
     Chat(String),
     TypingStart,
@@ -255,6 +307,11 @@ enum RelayFrame {
 impl RelayFrame {
     fn encode(&self) -> Result<Vec<u8>> {
         match self {
+            Self::InviteProof(proof) => {
+                let mut out = vec![6];
+                out.extend_from_slice(proof);
+                Ok(out)
+            }
             Self::Hello(name) => {
                 validate_display_name(name)?;
                 let mut out = vec![1];
@@ -281,6 +338,12 @@ impl RelayFrame {
         };
 
         match frame_type {
+            6 => {
+                if payload.len() != INVITE_AUTH_PROOF_BYTES {
+                    bail!("invalid invite proof");
+                }
+                Ok(Self::InviteProof(payload.try_into()?))
+            }
             1 => {
                 let name = String::from_utf8(payload.to_vec())?;
                 validate_display_name(&name)?;
@@ -393,4 +456,128 @@ fn validate_relay_code(code: &str) -> Result<()> {
         bail!("relay invite code must be 16 alphanumeric characters");
     }
     Ok(())
+}
+
+impl RelayRole {
+    fn local_auth_label(self) -> &'static [u8] {
+        match self {
+            Self::Caller => b"caller",
+            Self::Joiner => b"joiner",
+        }
+    }
+
+    fn peer_auth_label(self) -> &'static [u8] {
+        match self {
+            Self::Caller => b"joiner",
+            Self::Joiner => b"caller",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct InviteSecret([u8; INVITE_SECRET_BYTES]);
+
+impl InviteSecret {
+    fn generate() -> Self {
+        Self(rand::random())
+    }
+
+    fn parse(encoded: &str) -> Result<Self> {
+        let bytes = URL_SAFE_NO_PAD.decode(encoded)?;
+        let secret: [u8; INVITE_SECRET_BYTES] = bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("relay invite secret has invalid length"))?;
+        Ok(Self(secret))
+    }
+
+    fn encode(&self) -> String {
+        URL_SAFE_NO_PAD.encode(self.0)
+    }
+}
+
+impl Drop for InviteSecret {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+struct RelayInvite {
+    room_code: String,
+    secret: Option<InviteSecret>,
+}
+
+impl RelayInvite {
+    fn parse(raw: &str) -> Result<Self> {
+        let trimmed = raw.trim();
+        let (room_code, secret) = match trimmed.split_once('.') {
+            Some((room_code, secret)) => (room_code, Some(InviteSecret::parse(secret)?)),
+            None => (trimmed, None),
+        };
+
+        validate_relay_code(room_code)?;
+        Ok(Self {
+            room_code: room_code.to_string(),
+            secret,
+        })
+    }
+
+    fn format(room_code: &str, secret: &InviteSecret) -> String {
+        format!("{room_code}.{}", secret.encode())
+    }
+
+    fn room_code(&self) -> &str {
+        &self.room_code
+    }
+
+    fn into_secret(self) -> Option<InviteSecret> {
+        self.secret
+    }
+}
+
+fn invite_auth_proof(
+    secret: &InviteSecret,
+    handshake_hash: &[u8],
+    role_label: &[u8],
+) -> [u8; INVITE_AUTH_PROOF_BYTES] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"GhostCom relay invite authentication v1");
+    hasher.update(role_label);
+    hasher.update([0]);
+    hasher.update(secret.0);
+    hasher.update(handshake_hash);
+    hasher.finalize().into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_invite_keeps_room_code_separate_from_secret() {
+        let secret = InviteSecret([7; INVITE_SECRET_BYTES]);
+        let invite = RelayInvite::format("abcd1234efgh5678", &secret);
+        let parsed = RelayInvite::parse(&invite).unwrap();
+
+        assert_eq!(parsed.room_code(), "abcd1234efgh5678");
+        assert!(parsed.secret.is_some());
+    }
+
+    #[test]
+    fn relay_invite_still_accepts_legacy_room_codes() {
+        let parsed = RelayInvite::parse("abcd1234efgh5678").unwrap();
+
+        assert_eq!(parsed.room_code(), "abcd1234efgh5678");
+        assert!(parsed.secret.is_none());
+    }
+
+    #[test]
+    fn invite_proofs_are_directional() {
+        let secret = InviteSecret([9; INVITE_SECRET_BYTES]);
+        let handshake_hash = [3; 32];
+
+        let caller = invite_auth_proof(&secret, &handshake_hash, b"caller");
+        let joiner = invite_auth_proof(&secret, &handshake_hash, b"joiner");
+
+        assert_ne!(caller, joiner);
+    }
 }

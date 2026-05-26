@@ -85,7 +85,7 @@ cargo run -- relay-call --relay wss://your-app.fly.dev/relay
 cargo run -- relay-join <invite-code> --relay wss://your-app.fly.dev/relay
 ```
 
-Relay mode is for peers that cannot directly reach each other. The relay is still untrusted; clients perform a Noise handshake through it and verify a shared session code before chat.
+Relay mode is for peers that cannot directly reach each other. The relay is still untrusted; clients perform a Noise handshake through it and authenticate the client-generated secret from the full invite before chat. Legacy room-only invites fall back to manual shared session code verification.
 
 ## Install Script Surface
 

@@ -77,12 +77,13 @@ Required properties:
 - WebSocket setup followed by opaque binary forwarding.
 - In-memory relay rooms only.
 - Short-lived relay invite codes.
+- Client-generated invite secrets that are never sent to the relay.
 - One-time joins.
 - Strict setup and binary frame size limits.
 - No chat frame parsing on the server.
 - No chat plaintext, Noise private key, Noise session key, contact list, or durable identity storage.
 
-The relay server is treated as untrusted. Clients perform a Noise handshake through the relay, show a shared verification code derived from the Noise handshake hash, and only then exchange chat frames.
+The relay server is treated as untrusted. Clients perform a Noise handshake through the relay, then authenticate the full invite's client-generated secret inside the encrypted channel before exchanging chat frames. Legacy room-only invites fall back to a shared verification code derived from the Noise handshake hash.
 
 ## Protocol
 

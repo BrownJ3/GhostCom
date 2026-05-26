@@ -59,13 +59,15 @@ This checklist must be reviewed before any release that claims to be secure or p
 
 - Relay rooms are kept in RAM only.
 - Relay invite codes are generated from an OS cryptographic RNG.
+- Full relay invites include a client-generated secret that is never sent to the relay.
+- Relay sessions authenticate the invite secret inside the end-to-end encrypted Noise channel before chat starts.
 - Relay invite codes are short-lived and one-time use.
 - Relay setup messages have strict size limits.
 - Relay binary frames have strict size limits.
 - Relay forwards opaque encrypted bytes only.
 - Relay does not parse chat frames.
 - Relay does not receive Noise private keys or session keys.
-- Relay does not replace end-to-end session verification.
+- Relay falls back to manual end-to-end session verification for legacy room-only invites.
 - Public deployment has per-IP rate limits for WebSocket setup, invite creation, and invite joins.
 - Public deployment has active waiting-room, WebSocket connection, and paired-session caps.
 - Public deployment closes idle paired relay sessions.

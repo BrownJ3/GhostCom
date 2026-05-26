@@ -25,12 +25,15 @@ payload
 ## Message Types
 
 ```text
+invite_proof
 hello
 chat
 typing_start
 typing_stop
 close
 ```
+
+Relay `invite_proof` frames are encrypted end-to-end and are only valid during relay session setup immediately after the Noise handshake. Each proof is a 32-byte SHA-256 value bound to the client-generated invite secret, the Noise handshake hash, and the sender role. The relay never receives the invite secret because clients send only the room portion of a full `room.secret` invite to the server.
 
 Typing frames are encrypted end-to-end like chat frames. They carry no payload,
 are never persisted, and are only used for transient terminal presence during an

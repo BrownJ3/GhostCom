@@ -392,8 +392,10 @@ name = "ghostcom"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "crossterm",
  "futures-util",
+ "rand",
  "rcgen",
  "rustls",
  "rustls-pki-types",
@@ -401,6 +403,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "snow",
+ "subtle",
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",

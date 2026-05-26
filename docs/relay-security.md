@@ -28,7 +28,9 @@ Relay sessions use the Noise Protocol Framework through the `snow` crate. Peers 
 
 The server never participates in the Noise handshake. It does not terminate, inspect, or authenticate the encrypted chat session.
 
-Both peers display a shared verification code derived from the Noise handshake hash. Users must compare this code out-of-band before sending messages.
+Relay invites use the form `room.secret`. The relay receives only the short-lived `room` code. The client-generated `secret` is retained by the caller and joiner only, then used after the Noise handshake to prove invite possession inside the encrypted transport.
+
+If the invite proof succeeds, chat can begin without asking users to type `YES`. If a legacy room-only invite is used, both peers display a shared verification code derived from the Noise handshake hash and users must compare this code out-of-band before sending messages.
 
 ## Server Behavior
 
@@ -36,6 +38,7 @@ The relay server must:
 
 - Keep relay rooms in RAM only.
 - Use cryptographically random invite codes.
+- Keep client-generated invite secrets out of setup messages and server logs.
 - Allow each invite code to be joined only once.
 - Expire waiting rooms quickly.
 - Cap active relay rooms.

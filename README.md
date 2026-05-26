@@ -56,6 +56,8 @@ Start GhostCom:
 ghstprtcl
 ```
 
+On macOS or Linux, the installer places `ghstprtcl` in `~/.local/bin` and adds that directory to your shell profile if needed. Open a new terminal after installation, then `ghstprtcl` should work from any folder.
+
 The menu defaults to relay mode, which is the easiest way to chat across different networks.
 
 Start a relay chat:
@@ -70,9 +72,11 @@ Share the invite code with the other person, then they run:
 ghstprtcl relay-join <invite-code>
 ```
 
-Both sides will see the same session verification code. Compare that code out-of-band and type `YES` on both sides to begin chatting.
+Relay invite codes include a client-generated secret that is never sent to the relay. After the Noise handshake, both clients prove knowledge of that secret inside the encrypted channel and then start the chat. This makes entering the invite code the normal consent step.
 
-After verification, each side can choose a display name for the session. Press Enter to use the generated name. Display names are ephemeral and are not saved.
+Legacy room-only relay codes still fall back to showing a session verification code. In that case, compare the code out-of-band and type `YES` on both sides before chatting.
+
+After invite authentication, each side can choose a display name for the session. Press Enter to use the generated name. Display names are ephemeral and are not saved.
 
 Inside a chat session:
 
@@ -136,7 +140,9 @@ ghstprtcl listen --bind 0.0.0.0:7777
 ghstprtcl connect <host>:7777
 ```
 
-During connection setup, both peers see a shared verification code. Users must compare that value out-of-band before trusting the session.
+Direct connection setup shows both peers a shared verification code. Users must compare that value out-of-band before trusting the direct session.
+
+Relay setup uses a full invite in the form `room.secret`. The relay receives only the `room` value. The client-generated `secret` remains local to the two peers and is used after the Noise handshake to authenticate the session inside the encrypted channel. If a relay join uses an older room-only invite, GhostCom falls back to manual verification.
 
 ## Cross-Platform Target
 
@@ -154,9 +160,9 @@ See [docs/cross-platform.md](docs/cross-platform.md) for platform and release ex
 
 Release builds are published through GitHub Releases when a `v*` tag is pushed. The workflow builds standalone `ghstprtcl` binaries for Apple Silicon macOS, Windows x64, and Linux x64, publishes `SHA256SUMS`, signs it as `SHA256SUMS.sig`, and attempts GitHub artifact attestations where supported.
 
-The alpha installers currently default to `v0.1.0-alpha.9` because prereleases are not always exposed through GitHub's `latest` release URL. To override the version later, set `GHSTPRTCL_VERSION`.
+The alpha installers currently default to `v0.1.0-alpha.10` because prereleases are not always exposed through GitHub's `latest` release URL. To override the version later, set `GHSTPRTCL_VERSION`.
 
-The scripts download release assets from GitHub, verify the detached signature on `SHA256SUMS`, and then verify the selected archive checksum before installing. The macOS/Linux installer requires `openssl`; the Windows installer requires PowerShell 7 or newer for signature verification. The Fly service does not host installer scripts; it is reserved for the rendezvous and relay runtime. Intel macOS is not included in the current alpha binary set.
+The scripts download release assets from GitHub, verify the detached signature on `SHA256SUMS`, and then verify the selected archive checksum before installing. The macOS/Linux installer requires `openssl` and adds the install directory to the user's shell profile when needed. The Windows installer requires PowerShell 7 or newer for signature verification and adds the install directory to the user's PATH. The Fly service does not host installer scripts; it is reserved for the rendezvous and relay runtime. Intel macOS is not included in the current alpha binary set.
 
 ## Development Status
 
