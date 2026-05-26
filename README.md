@@ -1,15 +1,17 @@
 # GhostCom
 
-GhostCom is a terminal-first, peer-to-peer chat application for macOS, Windows, and Linux. Its core promise is narrow and deliberate:
+GhostCom is a terminal-first encrypted chat application for macOS, Windows, and Linux. Its core promise is narrow and deliberate:
 
 > If two people have terminals and can reach each other over a network, they can open an encrypted chat session with no chat history, no account system, and no intentional metadata storage.
 
-GhostCom is designed as an ephemeral secure communication tool, not a general messaging platform. Messages live in RAM for the active process lifetime and are destroyed when the session closes.
+GhostCom is designed as an ephemeral secure communication tool, not a general messaging platform. Messages live in RAM for the active process lifetime and are destroyed when the session closes. The default cross-network path uses an untrusted relay; chat contents and display names are still encrypted end-to-end between peers.
 
 ## Product Goals
 
 - Work quickly from a terminal on macOS, Windows, and Linux.
-- Support direct peer-to-peer 1-to-1 chat as the first production target.
+- Support simple 1-to-1 encrypted terminal chat.
+- Work across typical home networks through an untrusted relay.
+- Keep direct peer-to-peer TCP mode available for LANs, VPNs, and reachable hosts.
 - Encrypt all traffic between peers.
 - Authenticate peers using explicit verification.
 - Store no chat logs, transcripts, contact lists, peer history, telemetry, or diagnostics containing sensitive data.
@@ -34,6 +36,54 @@ See [SECURITY.md](SECURITY.md), [docs/threat-model.md](docs/threat-model.md), [d
 
 ## Quick Start
 
+Install the latest alpha from GitHub Releases.
+
+macOS Apple Silicon or Linux x64:
+
+```text
+curl -fsSL https://raw.githubusercontent.com/BrownJ3/GhostCom/master/install/install.sh | sh
+```
+
+Windows PowerShell 7 or newer:
+
+```text
+irm https://raw.githubusercontent.com/BrownJ3/GhostCom/master/install/install.ps1 | iex
+```
+
+Start GhostCom:
+
+```text
+ghstprtcl
+```
+
+The menu defaults to relay mode, which is the easiest way to chat across different networks.
+
+Start a relay chat:
+
+```text
+ghstprtcl relay-call
+```
+
+Share the invite code with the other person, then they run:
+
+```text
+ghstprtcl relay-join <invite-code>
+```
+
+Both sides will see the same session verification code. Compare that code out-of-band and type `YES` on both sides to begin chatting.
+
+After verification, each side can choose a display name for the session. Press Enter to use the generated name. Display names are ephemeral and are not saved.
+
+Inside a chat session:
+
+```text
+/quit
+```
+
+closes the session.
+
+## Development
+
 Build the development binary:
 
 ```text
@@ -48,7 +98,7 @@ cargo run
 
 The release binary is named `ghstprtcl`. Running it with no arguments starts a small menu for starting or joining a relay chat.
 
-Start a listener in one terminal:
+For direct LAN/VPN testing, start a listener in one terminal:
 
 ```text
 cargo run -- listen --bind 0.0.0.0:7777
@@ -67,24 +117,12 @@ cargo run -- call --rendezvous wss://your-site.fly.dev/rv
 cargo run -- join <invite-code> --rendezvous wss://your-site.fly.dev/rv
 ```
 
-For the most reliable cross-network path, use relay mode:
+For the default cross-network relay flow during development:
 
 ```text
-cargo run -- relay-call --relay wss://ghostcom-site.fly.dev/relay
-cargo run -- relay-join <invite-code> --relay wss://ghostcom-site.fly.dev/relay
+cargo run -- relay-call
+cargo run -- relay-join <invite-code>
 ```
-
-Both sides will see the same session verification code. Compare that code out-of-band and type `YES` on both sides to begin chatting.
-
-After verification, each side can choose a display name for the session. Press Enter to use the generated name. Display names are ephemeral and are not saved.
-
-Inside a chat session:
-
-```text
-/quit
-```
-
-closes the session.
 
 ## CLI Shape
 
@@ -117,18 +155,6 @@ See [docs/cross-platform.md](docs/cross-platform.md) for platform and release ex
 Release builds are published through GitHub Releases when a `v*` tag is pushed. The workflow builds standalone `ghstprtcl` binaries for Apple Silicon macOS, Windows x64, and Linux x64, publishes `SHA256SUMS`, signs it as `SHA256SUMS.sig`, and attempts GitHub artifact attestations where supported.
 
 The alpha installers currently default to `v0.1.0-alpha.7` because prereleases are not always exposed through GitHub's `latest` release URL. To override the version later, set `GHSTPRTCL_VERSION`.
-
-Install from GitHub on macOS Apple Silicon or Linux x64:
-
-```text
-curl -fsSL https://raw.githubusercontent.com/BrownJ3/GhostCom/master/install/install.sh | sh
-```
-
-Windows PowerShell:
-
-```text
-irm https://raw.githubusercontent.com/BrownJ3/GhostCom/master/install/install.ps1 | iex
-```
 
 The scripts download release assets from GitHub, verify the detached signature on `SHA256SUMS`, and then verify the selected archive checksum before installing. The macOS/Linux installer requires `openssl`; the Windows installer requires PowerShell 7 or newer for signature verification. The Fly service does not host installer scripts; it is reserved for the rendezvous and relay runtime. Intel macOS is not included in the current alpha binary set.
 
