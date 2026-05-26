@@ -12,6 +12,7 @@ use std::sync::{
 use std::thread::JoinHandle;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
+use zeroize::Zeroize;
 
 pub async fn confirm_peer(verification_code: &str) -> Result<bool> {
     println!();
@@ -24,7 +25,9 @@ pub async fn confirm_peer(verification_code: &str) -> Result<bool> {
 
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
-    Ok(is_confirmation(input.trim()))
+    let confirmed = is_confirmation(input.trim());
+    input.zeroize();
+    Ok(confirmed)
 }
 
 fn is_confirmation(input: &str) -> bool {
@@ -45,6 +48,7 @@ pub fn prompt_display_name(default_name: &str) -> Result<String> {
     } else {
         name.to_string()
     };
+    input.zeroize();
     validate_display_name(&selected)?;
     Ok(selected)
 }
@@ -75,8 +79,9 @@ where
                 };
 
                 match input {
-                    ChatInput::Line(line) => {
+                    ChatInput::Line(mut line) => {
                         if line.trim() == "/quit" {
+                            line.zeroize();
                             write_frame(&mut peer_writer, Frame::Close).await?;
                             break;
                         }
@@ -102,12 +107,13 @@ where
             frame = read_frame(&mut peer_reader) => {
                 match frame? {
                     Frame::Hello(_) => {}
-                    Frame::Chat(message) => {
+                    Frame::Chat(mut message) => {
                         typing_indicator.stop()?;
                         chat_println(&format!(
                             "{peer_name}> {}",
                             sanitize_for_terminal(&message)
                         ))?;
+                        message.zeroize();
                         chat_prompt()?;
                     }
                     Frame::TypingStart => typing_indicator.start()?,
@@ -179,10 +185,12 @@ impl ChatInputReader {
 
                 match key.code {
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        line.zeroize();
                         let _ = sender.send(ChatInput::Closed);
                         break;
                     }
                     KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        line.zeroize();
                         let _ = sender.send(ChatInput::Closed);
                         break;
                     }

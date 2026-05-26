@@ -51,9 +51,16 @@ pub async fn call(relay_url: String) -> Result<()> {
     run_noise_chat(socket, RelayRole::Caller, Some(secret)).await
 }
 
-pub async fn join(code: String, relay_url: String) -> Result<()> {
+pub async fn join(mut code: String, relay_url: String) -> Result<()> {
     println!("Joining relay invite...");
-    let invite = RelayInvite::parse(&code)?;
+    let invite = match RelayInvite::parse(&code) {
+        Ok(invite) => invite,
+        Err(error) => {
+            code.zeroize();
+            return Err(error);
+        }
+    };
+    code.zeroize();
     let socket = join_relay(&relay_url, invite.room_code()).await?;
     run_noise_chat(socket, RelayRole::Joiner, invite.into_secret()).await
 }
@@ -120,18 +127,21 @@ async fn run_noise_chat(
     role: RelayRole,
     invite_secret: Option<InviteSecret>,
 ) -> Result<()> {
-    let (mut transport, handshake_hash, verification_code) =
+    let (mut transport, mut handshake_hash, verification_code) =
         noise_handshake(&mut socket, role).await?;
 
     if let Some(secret) = invite_secret {
         verify_invite_secret(&mut socket, &mut transport, role, &secret, &handshake_hash).await?;
+        handshake_hash.zeroize();
         println!("Invite verified end-to-end.");
     } else if !confirm_peer(&verification_code).await? {
+        handshake_hash.zeroize();
         bail!("session verification was not confirmed");
     }
+    handshake_hash.zeroize();
 
     let local_name = prompt_display_name(default_relay_name(&verification_code))?;
-    send_encrypted(&mut socket, &mut transport, &RelayFrame::Hello(local_name)).await?;
+    send_encrypted(&mut socket, &mut transport, RelayFrame::Hello(local_name)).await?;
 
     let peer_name = loop {
         match read_encrypted(&mut socket, &mut transport).await? {
@@ -152,11 +162,12 @@ async fn noise_handshake(
 ) -> Result<(TransportState, Vec<u8>, String)> {
     let params: NoiseParams = NOISE_PATTERN.parse()?;
     let builder = Builder::new(params);
-    let static_key = builder.generate_keypair()?.private;
+    let mut static_key = builder.generate_keypair()?.private;
     let mut noise = match role {
         RelayRole::Caller => builder.local_private_key(&static_key)?.build_responder()?,
         RelayRole::Joiner => builder.local_private_key(&static_key)?.build_initiator()?,
     };
+    static_key.zeroize();
 
     let mut buf = vec![0_u8; MAX_NOISE_MESSAGE_BYTES];
 
@@ -164,23 +175,30 @@ async fn noise_handshake(
         RelayRole::Joiner => {
             let len = noise.write_message(&[], &mut buf)?;
             send_binary(socket, &buf[..len]).await?;
-            let msg = read_binary(socket).await?;
+            buf[..len].zeroize();
+            let mut msg = read_binary(socket).await?;
             noise.read_message(&msg, &mut buf)?;
+            msg.zeroize();
             let len = noise.write_message(&[], &mut buf)?;
             send_binary(socket, &buf[..len]).await?;
+            buf[..len].zeroize();
         }
         RelayRole::Caller => {
-            let msg = read_binary(socket).await?;
+            let mut msg = read_binary(socket).await?;
             noise.read_message(&msg, &mut buf)?;
+            msg.zeroize();
             let len = noise.write_message(&[], &mut buf)?;
             send_binary(socket, &buf[..len]).await?;
-            let msg = read_binary(socket).await?;
+            buf[..len].zeroize();
+            let mut msg = read_binary(socket).await?;
             noise.read_message(&msg, &mut buf)?;
+            msg.zeroize();
         }
     }
 
     let handshake_hash = noise.get_handshake_hash().to_vec();
     let verification_code = format_verification_code(&handshake_hash);
+    buf.zeroize();
     Ok((
         noise.into_transport_mode()?,
         handshake_hash,
@@ -195,15 +213,20 @@ async fn verify_invite_secret(
     secret: &InviteSecret,
     handshake_hash: &[u8],
 ) -> Result<()> {
-    let local_proof = invite_auth_proof(secret, handshake_hash, role.local_auth_label());
-    send_encrypted(socket, transport, &RelayFrame::InviteProof(local_proof)).await?;
+    let mut local_proof = invite_auth_proof(secret, handshake_hash, role.local_auth_label());
+    send_encrypted(socket, transport, RelayFrame::InviteProof(local_proof)).await?;
+    local_proof.zeroize();
 
-    let expected_peer_proof = invite_auth_proof(secret, handshake_hash, role.peer_auth_label());
+    let mut expected_peer_proof = invite_auth_proof(secret, handshake_hash, role.peer_auth_label());
     match read_encrypted(socket, transport).await? {
-        RelayFrame::InviteProof(peer_proof) => {
+        RelayFrame::InviteProof(mut peer_proof) => {
             if peer_proof.ct_eq(&expected_peer_proof).into() {
+                peer_proof.zeroize();
+                expected_peer_proof.zeroize();
                 return Ok(());
             }
+            peer_proof.zeroize();
+            expected_peer_proof.zeroize();
             bail!("invite authentication failed");
         }
         RelayFrame::Close => bail!("peer closed before invite authentication"),
@@ -235,31 +258,32 @@ async fn run_chat_loop(
         tokio::select! {
             input = input_events.recv() => {
                 let Some(input) = input else {
-                    let _ = send_encrypted(&mut socket, &mut transport, &RelayFrame::Close).await;
+                    let _ = send_encrypted(&mut socket, &mut transport, RelayFrame::Close).await;
                     break;
                 };
 
                 match input {
-                    ChatInput::Line(line) => {
+                    ChatInput::Line(mut line) => {
                         if line.trim() == "/quit" {
-                            let _ = send_encrypted(&mut socket, &mut transport, &RelayFrame::Close).await;
+                            line.zeroize();
+                            let _ = send_encrypted(&mut socket, &mut transport, RelayFrame::Close).await;
                             break;
                         }
 
-                        send_encrypted(&mut socket, &mut transport, &RelayFrame::Chat(line)).await?;
+                        send_encrypted(&mut socket, &mut transport, RelayFrame::Chat(line)).await?;
                     }
                     ChatInput::TypingStart => {
                         if typing_enabled {
-                            send_encrypted(&mut socket, &mut transport, &RelayFrame::TypingStart).await?;
+                            send_encrypted(&mut socket, &mut transport, RelayFrame::TypingStart).await?;
                         }
                     }
                     ChatInput::TypingStop => {
                         if typing_enabled {
-                            send_encrypted(&mut socket, &mut transport, &RelayFrame::TypingStop).await?;
+                            send_encrypted(&mut socket, &mut transport, RelayFrame::TypingStop).await?;
                         }
                     }
                     ChatInput::Closed => {
-                        let _ = send_encrypted(&mut socket, &mut transport, &RelayFrame::Close).await;
+                        let _ = send_encrypted(&mut socket, &mut transport, RelayFrame::Close).await;
                         break;
                     }
                 }
@@ -268,9 +292,10 @@ async fn run_chat_loop(
                 match frame? {
                     RelayFrame::Hello(_) => {}
                     RelayFrame::InviteProof(_) => bail!("unexpected invite proof"),
-                    RelayFrame::Chat(message) => {
+                    RelayFrame::Chat(mut message) => {
                         typing_indicator.stop()?;
                         chat_println(&format!("{peer_name}> {}", sanitize_for_terminal(&message)))?;
+                        message.zeroize();
                         chat_prompt()?;
                     }
                     RelayFrame::TypingStart => typing_indicator.start()?,
@@ -286,7 +311,7 @@ async fn run_chat_loop(
                 typing_indicator.tick()?;
             }
             _ = tokio::signal::ctrl_c() => {
-                let _ = send_encrypted(&mut socket, &mut transport, &RelayFrame::Close).await;
+                let _ = send_encrypted(&mut socket, &mut transport, RelayFrame::Close).await;
                 break;
             }
         }
@@ -305,25 +330,29 @@ enum RelayFrame {
 }
 
 impl RelayFrame {
-    fn encode(&self) -> Result<Vec<u8>> {
+    fn encode(self) -> Result<Vec<u8>> {
         match self {
-            Self::InviteProof(proof) => {
+            Self::InviteProof(mut proof) => {
                 let mut out = vec![6];
-                out.extend_from_slice(proof);
+                out.extend_from_slice(&proof);
+                proof.zeroize();
                 Ok(out)
             }
-            Self::Hello(name) => {
-                validate_display_name(name)?;
+            Self::Hello(mut name) => {
+                validate_display_name(&name)?;
                 let mut out = vec![1];
                 out.extend_from_slice(name.as_bytes());
+                name.zeroize();
                 Ok(out)
             }
-            Self::Chat(message) => {
+            Self::Chat(mut message) => {
                 if message.len() > MAX_CHAT_MESSAGE_BYTES {
+                    message.zeroize();
                     bail!("message too large");
                 }
                 let mut out = vec![2];
                 out.extend_from_slice(message.as_bytes());
+                message.zeroize();
                 Ok(out)
             }
             Self::TypingStart => Ok(vec![4]),
@@ -345,7 +374,10 @@ impl RelayFrame {
                 Ok(Self::InviteProof(payload.try_into()?))
             }
             1 => {
-                let name = String::from_utf8(payload.to_vec())?;
+                let mut payload = payload.to_vec();
+                let name = String::from_utf8(payload.clone());
+                payload.zeroize();
+                let name = name?;
                 validate_display_name(&name)?;
                 Ok(Self::Hello(name))
             }
@@ -353,7 +385,10 @@ impl RelayFrame {
                 if payload.len() > MAX_CHAT_MESSAGE_BYTES {
                     bail!("message too large");
                 }
-                Ok(Self::Chat(String::from_utf8(payload.to_vec())?))
+                let mut payload = payload.to_vec();
+                let message = String::from_utf8(payload.clone());
+                payload.zeroize();
+                Ok(Self::Chat(message?))
             }
             4 if payload.is_empty() => Ok(Self::TypingStart),
             5 if payload.is_empty() => Ok(Self::TypingStop),
@@ -366,22 +401,28 @@ impl RelayFrame {
 async fn send_encrypted(
     socket: &mut RelaySocket,
     transport: &mut TransportState,
-    frame: &RelayFrame,
+    frame: RelayFrame,
 ) -> Result<()> {
-    let plaintext = frame.encode()?;
+    let mut plaintext = frame.encode()?;
     let mut encrypted = vec![0_u8; plaintext.len() + 16];
     let len = transport.write_message(&plaintext, &mut encrypted)?;
-    send_binary(socket, &encrypted[..len]).await
+    let result = send_binary(socket, &encrypted[..len]).await;
+    plaintext.zeroize();
+    encrypted.zeroize();
+    result
 }
 
 async fn read_encrypted(
     socket: &mut RelaySocket,
     transport: &mut TransportState,
 ) -> Result<RelayFrame> {
-    let encrypted = read_binary(socket).await?;
+    let mut encrypted = read_binary(socket).await?;
     let mut plaintext = vec![0_u8; encrypted.len()];
     let len = transport.read_message(&encrypted, &mut plaintext)?;
-    RelayFrame::decode(&plaintext[..len])
+    encrypted.zeroize();
+    let frame = RelayFrame::decode(&plaintext[..len]);
+    plaintext.zeroize();
+    frame
 }
 
 async fn send_setup(socket: &mut RelaySocket, message: ClientMessage) -> Result<()> {
@@ -483,10 +524,14 @@ impl InviteSecret {
     }
 
     fn parse(encoded: &str) -> Result<Self> {
-        let bytes = URL_SAFE_NO_PAD.decode(encoded)?;
-        let secret: [u8; INVITE_SECRET_BYTES] = bytes
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("relay invite secret has invalid length"))?;
+        let mut bytes = URL_SAFE_NO_PAD.decode(encoded)?;
+        if bytes.len() != INVITE_SECRET_BYTES {
+            bytes.zeroize();
+            bail!("relay invite secret has invalid length");
+        }
+        let mut secret = [0_u8; INVITE_SECRET_BYTES];
+        secret.copy_from_slice(&bytes);
+        bytes.zeroize();
         Ok(Self(secret))
     }
 
@@ -545,7 +590,8 @@ fn invite_auth_proof(
     hasher.update([0]);
     hasher.update(secret.0);
     hasher.update(handshake_hash);
-    hasher.finalize().into()
+    let digest: [u8; INVITE_AUTH_PROOF_BYTES] = hasher.finalize().into();
+    digest
 }
 
 #[cfg(test)]

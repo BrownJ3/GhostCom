@@ -30,6 +30,7 @@ This checklist must be reviewed before any release that claims to be secure or p
 - Errors are actionable but do not dump sensitive protocol state.
 - Peer-controlled terminal output escapes control and bidirectional formatting characters.
 - Panic paths do not intentionally print decrypted frames.
+- Client-owned plaintext and secret buffers are zeroized after use where the code controls the allocation.
 
 ## Protocol Robustness
 

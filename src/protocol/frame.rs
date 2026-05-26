@@ -1,5 +1,6 @@
 use anyhow::{Result, bail};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use zeroize::Zeroize;
 
 const MAGIC: &[u8; 2] = b"GC";
 const VERSION: u8 = 1;
@@ -43,14 +44,18 @@ pub async fn write_frame<W>(writer: &mut W, frame: Frame) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    let (frame_type, payload) = match frame {
-        Frame::Hello(name) => {
+    let (frame_type, mut payload) = match frame {
+        Frame::Hello(mut name) => {
             validate_display_name(&name)?;
-            (FrameType::Hello, name.into_bytes())
+            let bytes = name.as_bytes().to_vec();
+            name.zeroize();
+            (FrameType::Hello, bytes)
         }
-        Frame::Chat(message) => {
-            let bytes = message.into_bytes();
+        Frame::Chat(mut message) => {
+            let mut bytes = message.as_bytes().to_vec();
+            message.zeroize();
             if bytes.len() > MAX_CHAT_PAYLOAD {
+                bytes.zeroize();
                 bail!("message too large");
             }
             (FrameType::Chat, bytes)
@@ -73,6 +78,7 @@ where
     writer.write_all(&header).await?;
     writer.write_all(&payload).await?;
     writer.flush().await?;
+    payload.zeroize();
     Ok(())
 }
 
@@ -102,32 +108,42 @@ where
     match frame_type {
         FrameType::Hello => {
             if payload.len() > MAX_NAME_PAYLOAD {
+                payload.zeroize();
                 bail!("display name too large");
             }
-            let name = String::from_utf8(payload)?;
+            let name = String::from_utf8(payload.clone());
+            payload.zeroize();
+            let name = name?;
             validate_display_name(&name)?;
             Ok(Frame::Hello(name))
         }
         FrameType::Chat => {
             if payload.len() > MAX_CHAT_PAYLOAD {
+                payload.zeroize();
                 bail!("chat message too large");
             }
-            Ok(Frame::Chat(String::from_utf8(payload)?))
+            let message = String::from_utf8(payload.clone());
+            payload.zeroize();
+            let message = message?;
+            Ok(Frame::Chat(message))
         }
         FrameType::TypingStart => {
             if !payload.is_empty() {
+                payload.zeroize();
                 bail!("typing frame must be empty");
             }
             Ok(Frame::TypingStart)
         }
         FrameType::TypingStop => {
             if !payload.is_empty() {
+                payload.zeroize();
                 bail!("typing frame must be empty");
             }
             Ok(Frame::TypingStop)
         }
         FrameType::Close => {
             if !payload.is_empty() {
+                payload.zeroize();
                 bail!("close frame must be empty");
             }
             Ok(Frame::Close)
