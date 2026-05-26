@@ -1,3 +1,4 @@
+use crate::terminal::line_ui::sanitize_for_terminal;
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -35,7 +36,9 @@ pub async fn create_invite(rendezvous_url: &str, listen_port: u16) -> Result<()>
             println!();
             println!("Share this code with your peer. Waiting for them to join...");
         }
-        ServerMessage::Error { message } => bail!("rendezvous error: {message}"),
+        ServerMessage::Error { message } => {
+            bail!("rendezvous error: {}", sanitize_for_terminal(&message))
+        }
         _ => bail!("unexpected rendezvous response"),
     }
 
@@ -45,7 +48,9 @@ pub async fn create_invite(rendezvous_url: &str, listen_port: u16) -> Result<()>
                 println!("Peer joined. Waiting for direct encrypted connection...");
                 return Ok(());
             }
-            ServerMessage::Error { message } => bail!("rendezvous error: {message}"),
+            ServerMessage::Error { message } => {
+                bail!("rendezvous error: {}", sanitize_for_terminal(&message))
+            }
             _ => {}
         }
     }
@@ -67,7 +72,9 @@ pub async fn join_invite(rendezvous_url: &str, code: &str) -> Result<String> {
 
     match read_message(&mut socket).await? {
         ServerMessage::Candidate { addr } => Ok(addr),
-        ServerMessage::Error { message } => bail!("rendezvous error: {message}"),
+        ServerMessage::Error { message } => {
+            bail!("rendezvous error: {}", sanitize_for_terminal(&message))
+        }
         _ => bail!("unexpected rendezvous response"),
     }
 }

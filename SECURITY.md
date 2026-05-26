@@ -15,6 +15,7 @@ GhostCom must:
 - Ensure logs never contain message text, peer secrets, private keys, or verification material.
 - Bound all incoming frame sizes.
 - Treat malformed input as hostile.
+- Escape terminal control characters before printing peer-controlled text.
 - Prefer safe Rust.
 - Require review for any `unsafe` code.
 

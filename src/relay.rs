@@ -1,5 +1,7 @@
 use crate::protocol::frame::validate_display_name;
-use crate::terminal::line_ui::{confirm_peer, prompt_display_name, spawn_stdin_reader};
+use crate::terminal::line_ui::{
+    confirm_peer, prompt_display_name, sanitize_for_terminal, spawn_stdin_reader,
+};
 use anyhow::{Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -60,7 +62,9 @@ async fn create_relay(relay_url: &str) -> Result<RelaySocket> {
             println!();
             println!("Share this code with your peer. Waiting for them to join...");
         }
-        ServerMessage::Error { message } => bail!("relay error: {message}"),
+        ServerMessage::Error { message } => {
+            bail!("relay error: {}", sanitize_for_terminal(&message))
+        }
         _ => bail!("unexpected relay response"),
     }
 
@@ -70,7 +74,9 @@ async fn create_relay(relay_url: &str) -> Result<RelaySocket> {
                 println!("Peer joined relay. Starting end-to-end Noise handshake...");
                 return Ok(socket);
             }
-            ServerMessage::Error { message } => bail!("relay error: {message}"),
+            ServerMessage::Error { message } => {
+                bail!("relay error: {}", sanitize_for_terminal(&message))
+            }
             _ => {}
         }
     }
@@ -93,7 +99,9 @@ async fn join_relay(relay_url: &str, code: &str) -> Result<RelaySocket> {
             println!("Relay joined. Starting end-to-end Noise handshake...");
             Ok(socket)
         }
-        ServerMessage::Error { message } => bail!("relay error: {message}"),
+        ServerMessage::Error { message } => {
+            bail!("relay error: {}", sanitize_for_terminal(&message))
+        }
         _ => bail!("unexpected relay response"),
     }
 }
@@ -183,7 +191,9 @@ async fn run_chat_loop(
             frame = read_encrypted(&mut socket, &mut transport) => {
                 match frame? {
                     RelayFrame::Hello(_) => {}
-                    RelayFrame::Chat(message) => println!("{peer_name}> {message}"),
+                    RelayFrame::Chat(message) => {
+                        println!("{peer_name}> {}", sanitize_for_terminal(&message))
+                    }
                     RelayFrame::Close => {
                         println!("Peer closed the session.");
                         break;

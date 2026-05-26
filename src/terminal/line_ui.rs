@@ -68,7 +68,9 @@ where
             frame = read_frame(&mut peer_reader) => {
                 match frame? {
                     Frame::Hello(_) => {}
-                    Frame::Chat(message) => println!("{peer_name}> {message}"),
+                    Frame::Chat(message) => {
+                        println!("{peer_name}> {}", sanitize_for_terminal(&message))
+                    }
                     Frame::Close => {
                         println!("Peer closed the session.");
                         break;
@@ -112,9 +114,31 @@ fn trim_line_endings(line: &mut String) {
     }
 }
 
+pub(crate) fn sanitize_for_terminal(text: &str) -> String {
+    let mut sanitized = String::with_capacity(text.len());
+
+    for ch in text.chars() {
+        if is_terminal_unsafe(ch) {
+            sanitized.push_str(&ch.escape_unicode().to_string());
+        } else {
+            sanitized.push(ch);
+        }
+    }
+
+    sanitized
+}
+
+fn is_terminal_unsafe(ch: char) -> bool {
+    ch.is_control()
+        || matches!(
+            ch,
+            '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_confirmation;
+    use super::{is_confirmation, sanitize_for_terminal};
 
     #[test]
     fn accepts_common_confirmation_inputs() {
@@ -124,5 +148,14 @@ mod tests {
         assert!(is_confirmation("Y"));
         assert!(!is_confirmation(""));
         assert!(!is_confirmation("no"));
+    }
+
+    #[test]
+    fn sanitizes_terminal_controls() {
+        assert_eq!(
+            sanitize_for_terminal("hi\u{1b}[2J\nthere"),
+            "hi\\u{1b}[2J\\u{a}there"
+        );
+        assert_eq!(sanitize_for_terminal("ab\u{202e}cd"), "ab\\u{202e}cd");
     }
 }
