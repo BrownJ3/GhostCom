@@ -1,7 +1,7 @@
 use crate::protocol::frame::validate_display_name;
 use crate::terminal::line_ui::{
-    ChatInput, confirm_peer, prompt_display_name, sanitize_for_terminal, spawn_chat_input_reader,
-    typing_enabled,
+    ChatInput, chat_println, chat_prompt, confirm_peer, prompt_display_name, sanitize_for_terminal,
+    spawn_chat_input_reader, typing_enabled,
 };
 use anyhow::{Result, bail};
 use futures_util::{SinkExt, StreamExt};
@@ -176,9 +176,10 @@ async fn run_chat_loop(
     let typing_enabled = typing_enabled();
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(350));
 
-    println!("Relay chat started with {peer_name}. Type /quit to close the session.");
-    print!("> ");
-    std::io::Write::flush(&mut std::io::stdout())?;
+    chat_println(&format!(
+        "Relay chat started with {peer_name}. Type /quit to close the session."
+    ))?;
+    chat_prompt()?;
 
     loop {
         tokio::select! {
@@ -218,13 +219,14 @@ async fn run_chat_loop(
                     RelayFrame::Hello(_) => {}
                     RelayFrame::Chat(message) => {
                         typing_indicator.stop()?;
-                        println!("{peer_name}> {}", sanitize_for_terminal(&message))
+                        chat_println(&format!("{peer_name}> {}", sanitize_for_terminal(&message)))?;
+                        chat_prompt()?;
                     }
                     RelayFrame::TypingStart => typing_indicator.start()?,
                     RelayFrame::TypingStop => typing_indicator.stop()?,
                     RelayFrame::Close => {
                         typing_indicator.stop()?;
-                        println!("Peer closed the session.");
+                        chat_println("Peer closed the session.")?;
                         break;
                     }
                 }

@@ -56,9 +56,10 @@ where
     let typing_enabled = typing_enabled();
     let mut tick = tokio::time::interval(Duration::from_millis(350));
 
-    println!("Chat started with {peer_name}. Type /quit to close the session.");
-    print!("> ");
-    std::io::stdout().flush()?;
+    chat_println(&format!(
+        "Chat started with {peer_name}. Type /quit to close the session."
+    ))?;
+    chat_prompt()?;
 
     loop {
         tokio::select! {
@@ -98,13 +99,17 @@ where
                     Frame::Hello(_) => {}
                     Frame::Chat(message) => {
                         typing_indicator.stop()?;
-                        println!("{peer_name}> {}", sanitize_for_terminal(&message))
+                        chat_println(&format!(
+                            "{peer_name}> {}",
+                            sanitize_for_terminal(&message)
+                        ))?;
+                        chat_prompt()?;
                     }
                     Frame::TypingStart => typing_indicator.start()?,
                     Frame::TypingStop => typing_indicator.stop()?,
                     Frame::Close => {
                         typing_indicator.stop()?;
-                        println!("Peer closed the session.");
+                        chat_println("Peer closed the session.")?;
                         break;
                     }
                 }
@@ -185,7 +190,7 @@ pub(crate) fn spawn_chat_input_reader() -> tokio::sync::mpsc::UnboundedReceiver<
                     }
                 }
                 KeyCode::Enter => {
-                    println!();
+                    let _ = chat_println("");
                     if typing {
                         typing = false;
                         if sender.send(ChatInput::TypingStop).is_err() {
@@ -196,8 +201,7 @@ pub(crate) fn spawn_chat_input_reader() -> tokio::sync::mpsc::UnboundedReceiver<
                     if sender.send(ChatInput::Line(submitted)).is_err() {
                         break;
                     }
-                    print!("> ");
-                    let _ = std::io::stdout().flush();
+                    let _ = chat_prompt();
                 }
                 _ => {}
             }
@@ -246,8 +250,8 @@ impl TypingIndicator {
     pub(crate) fn stop(&mut self) -> Result<()> {
         if self.active {
             self.active = false;
-            print!("\r\x1b[2K> ");
-            std::io::stdout().flush()?;
+            clear_current_line()?;
+            chat_prompt()?;
         }
         Ok(())
     }
@@ -269,6 +273,24 @@ impl TypingIndicator {
         std::io::stdout().flush()?;
         Ok(())
     }
+}
+
+pub(crate) fn chat_prompt() -> Result<()> {
+    print!("> ");
+    std::io::stdout().flush()?;
+    Ok(())
+}
+
+pub(crate) fn chat_println(line: &str) -> Result<()> {
+    print!("{line}\r\n");
+    std::io::stdout().flush()?;
+    Ok(())
+}
+
+fn clear_current_line() -> Result<()> {
+    print!("\r\x1b[2K");
+    std::io::stdout().flush()?;
+    Ok(())
 }
 
 pub(crate) fn sanitize_for_terminal(text: &str) -> String {
