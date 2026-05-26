@@ -97,7 +97,7 @@ Mitigation: keep the prompt explicit and consider adding a shorter human-friendl
 
 ### Process-Local Rate Limiting
 
-The rendezvous server now has process-local per-IP rate limits, active room caps, and active connection caps.
+The rendezvous server now has process-local per-IP rate limits, active room caps, and active connection caps. On Fly.io, the service resolves client IPs from `Fly-Client-IP`, then `X-Forwarded-For`, before falling back to the socket peer address.
 
 Security impact: improved.
 

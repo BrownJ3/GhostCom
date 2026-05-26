@@ -3,10 +3,12 @@ mod state;
 
 pub use state::RendezvousState;
 
+use crate::client_ip::resolve_client_ip;
 use axum::extract::{
     ConnectInfo, State,
     ws::{Message, WebSocket, WebSocketUpgrade},
 };
+use axum::http::HeaderMap;
 use futures_util::{SinkExt, StreamExt};
 use protocol::{ClientMessage, ServerMessage};
 use std::{
@@ -20,15 +22,16 @@ const MAX_WS_TEXT_BYTES: usize = 512;
 pub async fn rendezvous_ws(
     State(state): State<RendezvousState>,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl axum::response::IntoResponse {
+    let client_ip = resolve_client_ip(&headers, remote_addr);
     ws.max_message_size(MAX_WS_TEXT_BYTES)
         .max_frame_size(MAX_WS_TEXT_BYTES)
-        .on_upgrade(move |socket| handle_socket(socket, state, remote_addr))
+        .on_upgrade(move |socket| handle_socket(socket, state, client_ip))
 }
 
-async fn handle_socket(mut socket: WebSocket, state: RendezvousState, remote_addr: SocketAddr) {
-    let remote_ip = remote_addr.ip();
+async fn handle_socket(mut socket: WebSocket, state: RendezvousState, remote_ip: IpAddr) {
     if !state.allow_ws(remote_ip).await {
         send_error(&mut socket, "too many rendezvous connection attempts").await;
         return;

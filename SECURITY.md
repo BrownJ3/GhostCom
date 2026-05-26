@@ -110,6 +110,11 @@ Current rendezvous abuse limits:
 - 10 invite creation attempts per IP per five minutes.
 - 60 invite join attempts per IP per minute.
 
+On Fly.io, per-IP limits use proxy-provided client IP headers, preferring
+`Fly-Client-IP` and falling back to `X-Forwarded-For` before the socket peer
+address. Deployments behind different proxies must verify equivalent trusted
+client-IP handling.
+
 The rendezvous server can still observe IP addresses and timing. GhostCom must not claim that rendezvous is metadata-free.
 
 ## Reporting Vulnerabilities

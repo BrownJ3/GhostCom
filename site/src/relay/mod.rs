@@ -1,14 +1,19 @@
 mod protocol;
 mod state;
 
+use crate::client_ip::resolve_client_ip;
 use axum::extract::{
     ConnectInfo, State,
     ws::{Message, WebSocket, WebSocketUpgrade},
 };
+use axum::http::HeaderMap;
 use futures_util::{SinkExt, StreamExt, stream::SplitStream};
 use protocol::{ClientMessage, ServerMessage};
 pub use state::RelayState;
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 use tokio::sync::oneshot;
 
 const FIRST_MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -20,15 +25,16 @@ const MAX_RELAY_BYTES_PER_DIRECTION: u64 = 64 * 1024 * 1024;
 pub async fn relay_ws(
     State(state): State<RelayState>,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl axum::response::IntoResponse {
+    let client_ip = resolve_client_ip(&headers, remote_addr);
     ws.max_message_size(MAX_RELAY_BINARY_BYTES)
         .max_frame_size(MAX_RELAY_BINARY_BYTES)
-        .on_upgrade(move |socket| handle_socket(socket, state, remote_addr))
+        .on_upgrade(move |socket| handle_socket(socket, state, client_ip))
 }
 
-async fn handle_socket(mut socket: WebSocket, state: RelayState, remote_addr: SocketAddr) {
-    let remote_ip = remote_addr.ip();
+async fn handle_socket(mut socket: WebSocket, state: RelayState, remote_ip: IpAddr) {
     if !state.allow_connection(remote_ip).await {
         send_error(&mut socket, "too many relay connection attempts").await;
         return;
@@ -58,7 +64,7 @@ async fn handle_socket(mut socket: WebSocket, state: RelayState, remote_addr: So
     }
 }
 
-async fn handle_create(mut caller: WebSocket, state: RelayState, remote_ip: std::net::IpAddr) {
+async fn handle_create(mut caller: WebSocket, state: RelayState, remote_ip: IpAddr) {
     if !state.allow_create(remote_ip).await {
         send_error(&mut caller, "too many relay creation attempts").await;
         return;
@@ -106,7 +112,7 @@ async fn handle_create(mut caller: WebSocket, state: RelayState, remote_ip: std:
 async fn handle_join(
     mut joiner: WebSocket,
     state: RelayState,
-    remote_ip: std::net::IpAddr,
+    remote_ip: IpAddr,
     code: String,
 ) {
     if !state.allow_join(remote_ip).await {

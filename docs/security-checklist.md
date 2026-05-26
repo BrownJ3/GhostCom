@@ -49,6 +49,7 @@ This checklist must be reviewed before any release that claims to be secure or p
 - Rendezvous does not receive session private keys.
 - Rendezvous does not replace end-to-end peer verification.
 - Public deployment has per-IP rate limits for WebSocket upgrades, invite creation, and invite joins.
+- Public deployment resolves the real client IP from trusted proxy headers before applying rate limits.
 - Public deployment has active room and connection caps.
 - Public deployment has upstream network-level DDoS protection or a plan for abusive traffic beyond process-local limits.
 - Operational metrics exclude invite codes and chat data.
