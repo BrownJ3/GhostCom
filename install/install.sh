@@ -16,6 +16,51 @@ need curl
 need openssl
 need tar
 
+path_contains() {
+  case ":$PATH:" in
+    *":$1:"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+default_profile() {
+  shell_name="$(basename "${SHELL:-}")"
+  case "$shell_name" in
+    zsh) printf '%s\n' "$HOME/.zshrc" ;;
+    bash) printf '%s\n' "$HOME/.bashrc" ;;
+    *) printf '%s\n' "$HOME/.profile" ;;
+  esac
+}
+
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+ensure_path_entry() {
+  if path_contains "$INSTALL_DIR"; then
+    return 0
+  fi
+
+  profile="${GHSTPRTCL_PROFILE:-$(default_profile)}"
+  marker="# ghstprtcl installer"
+  mkdir -p "$(dirname "$profile")"
+  touch "$profile"
+
+  if ! grep -F "$marker" "$profile" >/dev/null 2>&1; then
+    quoted_install_dir="$(shell_quote "$INSTALL_DIR")"
+    {
+      printf '\n%s\n' "$marker"
+      printf 'ghstprtcl_dir=%s\n' "$quoted_install_dir"
+      printf 'case ":$PATH:" in\n'
+      printf '  *":$ghstprtcl_dir:"*) ;;\n'
+      printf '  *) export PATH="$ghstprtcl_dir:$PATH" ;;\n'
+      printf 'esac\n'
+    } >> "$profile"
+  fi
+
+  ADDED_PATH_PROFILE="$profile"
+}
+
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
@@ -87,6 +132,13 @@ fi
 mkdir -p "$INSTALL_DIR"
 tar -xzf "$TMP/$ASSET" -C "$TMP"
 install -m 0755 "$TMP/ghstprtcl" "$INSTALL_DIR/ghstprtcl"
+ADDED_PATH_PROFILE=""
+ensure_path_entry
 
 echo "Installed ghstprtcl to $INSTALL_DIR/ghstprtcl"
-echo "Run: ghstprtcl"
+if [ -n "$ADDED_PATH_PROFILE" ]; then
+  echo "Added $INSTALL_DIR to PATH in $ADDED_PATH_PROFILE"
+  echo "Open a new terminal, then run: ghstprtcl"
+else
+  echo "Run: ghstprtcl"
+fi

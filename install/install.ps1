@@ -82,12 +82,17 @@ uTTallJhWhFA/RBoIzHJjsopPxzToTP+JC13v7cvM47K4ni9TMjEEYm05w==
 
   $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
   if (($UserPath -split ";") -notcontains $InstallDir) {
-    [Environment]::SetEnvironmentVariable("Path", "$UserPath;$InstallDir", "User")
-    Write-Host "Added $InstallDir to your user PATH. Open a new terminal before running ghstprtcl."
+    $NewUserPath = if ($UserPath) { "$UserPath;$InstallDir" } else { $InstallDir }
+    [Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
+    if (($env:Path -split ";") -notcontains $InstallDir) {
+      $env:Path = "$env:Path;$InstallDir"
+    }
+    Write-Host "Added $InstallDir to your user PATH."
   }
 
   Write-Host "Installed ghstprtcl to $InstallDir"
   Write-Host "Run: ghstprtcl"
+  Write-Host "If another terminal was already open, open a new terminal before running ghstprtcl there."
 } finally {
   Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 }
