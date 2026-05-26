@@ -44,6 +44,6 @@ verification, rate limiting, and signed distribution.
 - Keep local Git identity configured to non-personal project metadata before
   making future commits.
 - Keep installer scripts in GitHub, not on the Fly runtime service.
-- Sign release checksums before broad public distribution.
+- Keep the GitHub Actions release signing secret configured and rotate it if it is ever exposed.
 - Keep real deployment secrets in Fly/GitHub secret stores only, never in this
   repository.

@@ -78,10 +78,10 @@ Prebuilt binaries are part of the security boundary. A simple install flow must 
 Release assets should be published through GitHub Releases with:
 
 - Per-asset SHA-256 checksums.
+- Detached signatures for the checksum manifest.
 - GitHub artifact provenance attestations where supported.
-- A documented upgrade path to detached signature verification before broad production claims.
 
-Installer scripts must verify checksums before copying binaries into a user path. Checksums downloaded from the same release primarily protect against corruption and mismatched assets; stronger tamper resistance requires signed checksums or binary signatures.
+Installer scripts must verify the checksum signature before trusting `SHA256SUMS`, then verify the selected archive checksum before copying binaries into a user path. The release signing private key must live only in GitHub Actions secrets or an equivalent secret manager; the public verification key is safe to publish in this repository.
 
 ## Rendezvous Security
 

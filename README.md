@@ -114,9 +114,9 @@ See [docs/cross-platform.md](docs/cross-platform.md) for platform and release ex
 
 ## Installer Plan
 
-Release builds are published through GitHub Releases when a `v*` tag is pushed. The workflow builds standalone `ghstprtcl` binaries for Apple Silicon macOS, Windows x64, and Linux x64, publishes `SHA256SUMS`, and attempts GitHub artifact attestations where supported.
+Release builds are published through GitHub Releases when a `v*` tag is pushed. The workflow builds standalone `ghstprtcl` binaries for Apple Silicon macOS, Windows x64, and Linux x64, publishes `SHA256SUMS`, signs it as `SHA256SUMS.sig`, and attempts GitHub artifact attestations where supported.
 
-The alpha installers currently default to `v0.1.0-alpha.4` because prereleases are not always exposed through GitHub's `latest` release URL. To override the version later, set `GHSTPRTCL_VERSION`.
+The alpha installers currently default to `v0.1.0-alpha.5` because prereleases are not always exposed through GitHub's `latest` release URL. To override the version later, set `GHSTPRTCL_VERSION`.
 
 Install from GitHub on macOS Apple Silicon or Linux x64:
 
@@ -130,7 +130,7 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/BrownJ3/GhostCom/master/install/install.ps1 | iex
 ```
 
-The scripts download release assets from GitHub and verify SHA-256 checksums before installing. The Fly service does not host installer scripts; it is reserved for the rendezvous and relay runtime. Intel macOS is not included in the current alpha binary set.
+The scripts download release assets from GitHub, verify the detached signature on `SHA256SUMS`, and then verify the selected archive checksum before installing. The macOS/Linux installer requires `openssl`; the Windows installer requires PowerShell 7 or newer for signature verification. The Fly service does not host installer scripts; it is reserved for the rendezvous and relay runtime. Intel macOS is not included in the current alpha binary set.
 
 ## Development Status
 

@@ -88,6 +88,20 @@ jobs:
           cd dist
           sha256sum ghstprtcl-* > SHA256SUMS
 
+      - name: Sign checksums
+        shell: bash
+        env:
+          RELEASE_SIGNING_KEY_B64: ${{ secrets.GHSTPRTCL_RELEASE_SIGNING_KEY_B64 }}
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY_B64" ]; then
+            echo "Missing GHSTPRTCL_RELEASE_SIGNING_KEY_B64 secret" >&2
+            exit 1
+          fi
+          printf '%s' "$RELEASE_SIGNING_KEY_B64" | base64 -d > release-signing-private.pem
+          chmod 600 release-signing-private.pem
+          openssl dgst -sha256 -sign release-signing-private.pem -out dist/SHA256SUMS.sig dist/SHA256SUMS
+          rm -f release-signing-private.pem
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -95,4 +109,5 @@ jobs:
           files: |
             dist/ghstprtcl-*
             dist/SHA256SUMS
+            dist/SHA256SUMS.sig
           generate_release_notes: true

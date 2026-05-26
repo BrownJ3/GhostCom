@@ -2,7 +2,7 @@
 set -eu
 
 REPO="${GHSTPRTCL_REPO:-BrownJ3/GhostCom}"
-VERSION="${GHSTPRTCL_VERSION:-v0.1.0-alpha.4}"
+VERSION="${GHSTPRTCL_VERSION:-v0.1.0-alpha.5}"
 INSTALL_DIR="${GHSTPRTCL_INSTALL_DIR:-$HOME/.local/bin}"
 
 need() {
@@ -13,6 +13,7 @@ need() {
 }
 
 need curl
+need openssl
 need tar
 
 OS="$(uname -s)"
@@ -30,9 +31,11 @@ BASE="https://github.com/$REPO/releases"
 if [ "$VERSION" = "latest" ]; then
   DOWNLOAD="$BASE/latest/download/$ASSET"
   SUMS="$BASE/latest/download/SHA256SUMS"
+  SIG="$BASE/latest/download/SHA256SUMS.sig"
 else
   DOWNLOAD="$BASE/download/$VERSION/$ASSET"
   SUMS="$BASE/download/$VERSION/SHA256SUMS"
+  SIG="$BASE/download/$VERSION/SHA256SUMS.sig"
 fi
 
 TMP="$(mktemp -d)"
@@ -44,6 +47,22 @@ trap cleanup EXIT INT TERM
 echo "Downloading $ASSET"
 curl -fL "$DOWNLOAD" -o "$TMP/$ASSET"
 curl -fL "$SUMS" -o "$TMP/SHA256SUMS"
+curl -fL "$SIG" -o "$TMP/SHA256SUMS.sig"
+
+cat > "$TMP/release-signing-public-key.pem" <<'EOF'
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7ksrBPCPrcno8t3lh/5QY93tETqZ
+uTTallJhWhFA/RBoIzHJjsopPxzToTP+JC13v7cvM47K4ni9TMjEEYm05w==
+-----END PUBLIC KEY-----
+EOF
+
+if ! openssl dgst -sha256 \
+  -verify "$TMP/release-signing-public-key.pem" \
+  -signature "$TMP/SHA256SUMS.sig" \
+  "$TMP/SHA256SUMS" >/dev/null 2>&1; then
+  echo "Release signature verification failed" >&2
+  exit 1
+fi
 
 EXPECTED="$(grep " $ASSET\$" "$TMP/SHA256SUMS" | awk '{print $1}')"
 if [ -z "$EXPECTED" ]; then
