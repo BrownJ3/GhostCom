@@ -65,6 +65,9 @@ This checklist must be reviewed before any release that claims to be secure or p
 - Relay does not parse chat frames.
 - Relay does not receive Noise private keys or session keys.
 - Relay does not replace end-to-end session verification.
+- Public deployment has per-IP rate limits for WebSocket setup, invite creation, and invite joins.
+- Public deployment has active waiting-room, WebSocket connection, and paired-session caps.
+- Public deployment closes idle paired relay sessions.
 
 ## Rust Safety
 

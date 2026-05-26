@@ -117,6 +117,18 @@ client-IP handling.
 
 The rendezvous server can still observe IP addresses and timing. GhostCom must not claim that rendezvous is metadata-free.
 
+Current relay abuse limits:
+
+- 256 active waiting relay rooms.
+- 1024 active relay WebSocket connections.
+- 256 active paired relay sessions.
+- 60 WebSocket setup attempts per IP per minute.
+- 10 invite creation attempts per IP per five minutes.
+- 60 invite join attempts per IP per minute.
+- 32 KiB maximum relayed binary frame size.
+- 64 MiB maximum relayed bytes per direction.
+- 15 minute idle timeout for paired relay forwarding.
+
 ## Reporting Vulnerabilities
 
 This project does not yet have a public vulnerability intake process. Before public release, add a private security contact and disclosure process here.

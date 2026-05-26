@@ -40,11 +40,25 @@ The relay server must:
 - Expire waiting rooms quickly.
 - Cap active relay rooms.
 - Cap active relay sessions.
+- Cap active relay WebSocket connections.
 - Cap WebSocket setup message sizes.
 - Cap relayed binary frame sizes.
+- Close idle paired sessions.
 - Drop both peers on malformed relay traffic.
 - Avoid logging relay payloads.
 - Avoid persistent storage.
+
+## Current Abuse Limits
+
+- 256 active waiting rooms.
+- 1024 active relay WebSocket connections.
+- 256 active paired relay sessions.
+- 60 WebSocket setup attempts per IP per minute.
+- 10 invite creation attempts per IP per five minutes.
+- 60 invite join attempts per IP per minute.
+- 32 KiB maximum binary frame size.
+- 64 MiB maximum relayed bytes per direction.
+- 15 minute idle timeout for paired relay forwarding.
 
 ## Destruction Semantics
 
@@ -67,4 +81,3 @@ Inaccurate claim:
 ```text
 The relay leaves no recoverable trace anywhere.
 ```
-

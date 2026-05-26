@@ -21,6 +21,7 @@ const ROOM_WAIT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MAX_WS_TEXT_BYTES: usize = 512;
 const MAX_RELAY_BINARY_BYTES: usize = 32 * 1024;
 const MAX_RELAY_BYTES_PER_DIRECTION: u64 = 64 * 1024 * 1024;
+const RELAY_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 pub async fn relay_ws(
     State(state): State<RelayState>,
@@ -35,6 +36,16 @@ pub async fn relay_ws(
 }
 
 async fn handle_socket(mut socket: WebSocket, state: RelayState, remote_ip: IpAddr) {
+    if !state.try_acquire_connection().await {
+        send_error(&mut socket, "relay server has too many active connections").await;
+        return;
+    }
+
+    handle_socket_inner(socket, state.clone(), remote_ip).await;
+    state.release_connection().await;
+}
+
+async fn handle_socket_inner(mut socket: WebSocket, state: RelayState, remote_ip: IpAddr) {
     if !state.allow_connection(remote_ip).await {
         send_error(&mut socket, "too many relay connection attempts").await;
         return;
@@ -84,7 +95,7 @@ async fn handle_create(mut caller: WebSocket, state: RelayState, remote_ip: IpAd
         return;
     }
 
-    let joiner = match tokio::time::timeout(ROOM_WAIT_TIMEOUT, join_rx).await {
+    let mut joiner = match tokio::time::timeout(ROOM_WAIT_TIMEOUT, join_rx).await {
         Ok(Ok(joiner)) => joiner,
         _ => {
             state.remove_room(&code).await;
@@ -106,7 +117,14 @@ async fn handle_create(mut caller: WebSocket, state: RelayState, remote_ip: IpAd
         return;
     }
 
+    if !state.try_acquire_session().await {
+        send_error(&mut caller, "relay server has too many active sessions").await;
+        send_error(&mut joiner, "relay server has too many active sessions").await;
+        return;
+    }
+
     bridge(caller, joiner).await;
+    state.release_session().await;
 }
 
 async fn handle_join(
@@ -165,7 +183,8 @@ where
 {
     let mut forwarded = 0_u64;
 
-    while let Some(Ok(message)) = reader.next().await {
+    while let Ok(Some(Ok(message))) = tokio::time::timeout(RELAY_IDLE_TIMEOUT, reader.next()).await
+    {
         match message {
             Message::Binary(bytes) if bytes.len() <= MAX_RELAY_BINARY_BYTES => {
                 forwarded = forwarded.saturating_add(bytes.len() as u64);
