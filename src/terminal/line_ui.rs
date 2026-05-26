@@ -53,6 +53,7 @@ where
     let mut peer_writer = writer;
     let mut input_events = spawn_chat_input_reader();
     let mut typing_indicator = TypingIndicator::new(peer_name.clone());
+    let typing_enabled = typing_enabled();
     let mut tick = tokio::time::interval(Duration::from_millis(350));
 
     println!("Chat started with {peer_name}. Type /quit to close the session.");
@@ -77,10 +78,14 @@ where
                         write_frame(&mut peer_writer, Frame::Chat(line)).await?;
                     }
                     ChatInput::TypingStart => {
-                        write_frame(&mut peer_writer, Frame::TypingStart).await?;
+                        if typing_enabled {
+                            write_frame(&mut peer_writer, Frame::TypingStart).await?;
+                        }
                     }
                     ChatInput::TypingStop => {
-                        write_frame(&mut peer_writer, Frame::TypingStop).await?;
+                        if typing_enabled {
+                            write_frame(&mut peer_writer, Frame::TypingStop).await?;
+                        }
                     }
                     ChatInput::Closed => {
                         write_frame(&mut peer_writer, Frame::Close).await?;
@@ -115,6 +120,12 @@ where
     }
 
     Ok(())
+}
+
+pub(crate) fn typing_enabled() -> bool {
+    std::env::var("GHSTPRTCL_ENABLE_TYPING")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Eq, PartialEq)]

@@ -154,7 +154,7 @@ See [docs/cross-platform.md](docs/cross-platform.md) for platform and release ex
 
 Release builds are published through GitHub Releases when a `v*` tag is pushed. The workflow builds standalone `ghstprtcl` binaries for Apple Silicon macOS, Windows x64, and Linux x64, publishes `SHA256SUMS`, signs it as `SHA256SUMS.sig`, and attempts GitHub artifact attestations where supported.
 
-The alpha installers currently default to `v0.1.0-alpha.7` because prereleases are not always exposed through GitHub's `latest` release URL. To override the version later, set `GHSTPRTCL_VERSION`.
+The alpha installers currently default to `v0.1.0-alpha.8` because prereleases are not always exposed through GitHub's `latest` release URL. To override the version later, set `GHSTPRTCL_VERSION`.
 
 The scripts download release assets from GitHub, verify the detached signature on `SHA256SUMS`, and then verify the selected archive checksum before installing. The macOS/Linux installer requires `openssl`; the Windows installer requires PowerShell 7 or newer for signature verification. The Fly service does not host installer scripts; it is reserved for the rendezvous and relay runtime. Intel macOS is not included in the current alpha binary set.
 
@@ -167,7 +167,7 @@ This repository has an initial encrypted 1-to-1 terminal chat MVP:
 - Mutual TLS certificate presentation.
 - Manual shared session verification code confirmation.
 - Ephemeral display names, chosen or generated per session.
-- End-to-end encrypted transient typing indicators.
+- End-to-end encrypted transient typing indicators are implemented but disabled by default until capability negotiation is added.
 - Optional WebSocket rendezvous for invite-code based direct connection setup.
 - Optional WebSocket relay using end-to-end Noise encryption.
 - Bounded message frames.

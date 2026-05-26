@@ -1,6 +1,7 @@
 use crate::protocol::frame::validate_display_name;
 use crate::terminal::line_ui::{
     ChatInput, confirm_peer, prompt_display_name, sanitize_for_terminal, spawn_chat_input_reader,
+    typing_enabled,
 };
 use anyhow::{Result, bail};
 use futures_util::{SinkExt, StreamExt};
@@ -172,6 +173,7 @@ async fn run_chat_loop(
 ) -> Result<()> {
     let mut input_events = spawn_chat_input_reader();
     let mut typing_indicator = crate::terminal::line_ui::TypingIndicator::new(peer_name.clone());
+    let typing_enabled = typing_enabled();
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(350));
 
     println!("Relay chat started with {peer_name}. Type /quit to close the session.");
@@ -196,10 +198,14 @@ async fn run_chat_loop(
                         send_encrypted(&mut socket, &mut transport, &RelayFrame::Chat(line)).await?;
                     }
                     ChatInput::TypingStart => {
-                        send_encrypted(&mut socket, &mut transport, &RelayFrame::TypingStart).await?;
+                        if typing_enabled {
+                            send_encrypted(&mut socket, &mut transport, &RelayFrame::TypingStart).await?;
+                        }
                     }
                     ChatInput::TypingStop => {
-                        send_encrypted(&mut socket, &mut transport, &RelayFrame::TypingStop).await?;
+                        if typing_enabled {
+                            send_encrypted(&mut socket, &mut transport, &RelayFrame::TypingStop).await?;
+                        }
                     }
                     ChatInput::Closed => {
                         let _ = send_encrypted(&mut socket, &mut transport, &RelayFrame::Close).await;

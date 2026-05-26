@@ -34,7 +34,8 @@ close
 
 Typing frames are encrypted end-to-end like chat frames. They carry no payload,
 are never persisted, and are only used for transient terminal presence during an
-active session.
+active session. Emitting typing frames is disabled by default until capability
+negotiation is added, because older clients reject unknown frame types.
 
 ## Size Limits
 
