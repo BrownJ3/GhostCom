@@ -1,7 +1,7 @@
 use crate::protocol::frame::validate_display_name;
 use crate::terminal::line_ui::{
-    ChatInput, chat_println, chat_prompt, confirm_peer, prompt_display_name, sanitize_for_terminal,
-    spawn_chat_input_reader, typing_enabled,
+    ChatInput, ChatInputReader, chat_println, chat_prompt, confirm_peer, prompt_display_name,
+    sanitize_for_terminal, typing_enabled,
 };
 use anyhow::{Result, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -221,7 +221,7 @@ async fn run_chat_loop(
     mut transport: TransportState,
     peer_name: String,
 ) -> Result<()> {
-    let mut input_events = spawn_chat_input_reader();
+    let mut input_events = ChatInputReader::spawn();
     let mut typing_indicator = crate::terminal::line_ui::TypingIndicator::new(peer_name.clone());
     let typing_enabled = typing_enabled();
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(350));

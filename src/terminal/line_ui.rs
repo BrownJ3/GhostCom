@@ -1,10 +1,15 @@
 use crate::protocol::frame::{Frame, read_frame, validate_display_name, write_frame};
 use anyhow::Result;
 use crossterm::{
-    event::{Event, KeyCode, KeyEventKind, KeyModifiers, read},
+    event::{Event, KeyCode, KeyEventKind, KeyModifiers, poll, read},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 use std::io::Write;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::thread::JoinHandle;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -51,7 +56,7 @@ where
     let (reader, writer) = tokio::io::split(stream);
     let mut peer_reader = reader;
     let mut peer_writer = writer;
-    let mut input_events = spawn_chat_input_reader();
+    let mut input_events = ChatInputReader::spawn();
     let mut typing_indicator = TypingIndicator::new(peer_name.clone());
     let typing_enabled = typing_enabled();
     let mut tick = tokio::time::interval(Duration::from_millis(350));
@@ -141,74 +146,107 @@ pub(crate) enum ChatInput {
     Closed,
 }
 
-pub(crate) fn spawn_chat_input_reader() -> tokio::sync::mpsc::UnboundedReceiver<ChatInput> {
-    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+pub(crate) struct ChatInputReader {
+    receiver: tokio::sync::mpsc::UnboundedReceiver<ChatInput>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
 
-    std::thread::spawn(move || {
-        let _raw_mode = RawModeGuard::enable();
-        let mut line = String::new();
-        let mut typing = false;
+impl ChatInputReader {
+    pub(crate) fn spawn() -> Self {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
 
-        loop {
-            let Ok(Event::Key(key)) = read() else {
-                continue;
-            };
-            if key.kind != KeyEventKind::Press {
-                continue;
-            }
+        let thread = std::thread::spawn(move || {
+            let _raw_mode = RawModeGuard::enable();
+            let mut line = String::new();
+            let mut typing = false;
 
-            match key.code {
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    let _ = sender.send(ChatInput::Closed);
+            loop {
+                if thread_stop.load(Ordering::Relaxed) {
                     break;
                 }
-                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    let _ = sender.send(ChatInput::Closed);
-                    break;
+                if !poll(Duration::from_millis(50)).unwrap_or(false) {
+                    continue;
                 }
-                KeyCode::Char(ch) => {
-                    line.push(ch);
-                    print!("{ch}");
-                    let _ = std::io::stdout().flush();
-                    if !typing {
-                        typing = true;
-                        if sender.send(ChatInput::TypingStart).is_err() {
-                            break;
-                        }
-                    }
+                let Ok(Event::Key(key)) = read() else {
+                    continue;
+                };
+                if key.kind != KeyEventKind::Press {
+                    continue;
                 }
-                KeyCode::Backspace => {
-                    if line.pop().is_some() {
-                        print!("\u{8} \u{8}");
-                        let _ = std::io::stdout().flush();
-                    }
-                    if line.is_empty() && typing {
-                        typing = false;
-                        if sender.send(ChatInput::TypingStop).is_err() {
-                            break;
-                        }
-                    }
-                }
-                KeyCode::Enter => {
-                    let _ = chat_println("");
-                    if typing {
-                        typing = false;
-                        if sender.send(ChatInput::TypingStop).is_err() {
-                            break;
-                        }
-                    }
-                    let submitted = std::mem::take(&mut line);
-                    if sender.send(ChatInput::Line(submitted)).is_err() {
+
+                match key.code {
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        let _ = sender.send(ChatInput::Closed);
                         break;
                     }
-                    let _ = chat_prompt();
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        let _ = sender.send(ChatInput::Closed);
+                        break;
+                    }
+                    KeyCode::Char(ch) => {
+                        line.push(ch);
+                        print!("{ch}");
+                        let _ = std::io::stdout().flush();
+                        if !typing {
+                            typing = true;
+                            if sender.send(ChatInput::TypingStart).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    KeyCode::Backspace | KeyCode::Delete => {
+                        if line.pop().is_some() {
+                            print!("\x08 \x08");
+                            let _ = std::io::stdout().flush();
+                        }
+                        if line.is_empty() && typing {
+                            typing = false;
+                            if sender.send(ChatInput::TypingStop).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    KeyCode::Enter => {
+                        let _ = chat_println("");
+                        if typing {
+                            typing = false;
+                            if sender.send(ChatInput::TypingStop).is_err() {
+                                break;
+                            }
+                        }
+                        let submitted = std::mem::take(&mut line);
+                        if sender.send(ChatInput::Line(submitted)).is_err() {
+                            break;
+                        }
+                        let _ = chat_prompt();
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
-        }
-    });
+        });
 
-    receiver
+        Self {
+            receiver,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    pub(crate) async fn recv(&mut self) -> Option<ChatInput> {
+        self.receiver.recv().await
+    }
+}
+
+impl Drop for ChatInputReader {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 struct RawModeGuard;
