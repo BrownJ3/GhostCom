@@ -118,19 +118,19 @@ Release builds are published through GitHub Releases when a `v*` tag is pushed. 
 
 The alpha installers currently default to `v0.1.0-alpha.4` because prereleases are not always exposed through GitHub's `latest` release URL. To override the version later, set `GHSTPRTCL_VERSION`.
 
-Install on macOS Apple Silicon or Linux x64:
+Install from GitHub on macOS Apple Silicon or Linux x64:
 
 ```text
-curl -fsSL https://ghostcom-site.fly.dev/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/BrownJ3/GhostCom/master/install/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```text
-irm https://ghostcom-site.fly.dev/install.ps1 | iex
+irm https://raw.githubusercontent.com/BrownJ3/GhostCom/master/install/install.ps1 | iex
 ```
 
-The scripts download release assets from GitHub and verify SHA-256 checksums before installing. If the GitHub repository or release assets are private, users must authenticate to GitHub or install from a manually downloaded asset. Intel macOS is not included in the current alpha binary set.
+The scripts download release assets from GitHub and verify SHA-256 checksums before installing. The Fly service does not host installer scripts; it is reserved for the rendezvous and relay runtime. Intel macOS is not included in the current alpha binary set.
 
 ## Development Status
 

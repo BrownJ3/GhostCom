@@ -52,9 +52,8 @@ fly deploy
 
 - The service reads `PORT`, which Fly provides.
 - The page is embedded in the Rust binary.
-- `/install.sh` serves the macOS Apple Silicon/Linux x64 installer script.
-- `/install.ps1` serves the Windows x64 installer script.
-- The installers default to the current alpha tag and verify SHA-256 checksums before installing.
+- Installer scripts are hosted in the GitHub repository, not on the Fly service.
+- `/install.sh`, `/install.ps1`, and other unknown paths return `404 Not Found`.
 - The rendezvous service uses in-memory rooms only.
 - Invite codes expire after five minutes.
 - Invite codes are one-time use.

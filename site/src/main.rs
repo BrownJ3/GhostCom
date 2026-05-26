@@ -1,5 +1,4 @@
 mod app;
-mod install_scripts;
 mod page;
 mod rate_limit;
 mod relay;

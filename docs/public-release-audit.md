@@ -43,8 +43,7 @@ verification, rate limiting, and signed distribution.
 
 - Keep local Git identity configured to non-personal project metadata before
   making future commits.
-- Decide whether the public `/install.sh` and `/install.ps1` endpoints fit the
-  desired site posture.
+- Keep installer scripts in GitHub, not on the Fly runtime service.
 - Sign release checksums before broad public distribution.
 - Keep real deployment secrets in Fly/GitHub secret stores only, never in this
   repository.
