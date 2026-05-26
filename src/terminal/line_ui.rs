@@ -1,6 +1,11 @@
 use crate::protocol::frame::{Frame, read_frame, validate_display_name, write_frame};
 use anyhow::Result;
+use crossterm::{
+    event::{Event, KeyCode, KeyEventKind, KeyModifiers, read},
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
 use std::io::Write;
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pub async fn confirm_peer(verification_code: &str) -> Result<bool> {
@@ -46,36 +51,61 @@ where
     let (reader, writer) = tokio::io::split(stream);
     let mut peer_reader = reader;
     let mut peer_writer = writer;
-    let mut stdin_lines = spawn_stdin_reader();
+    let mut input_events = spawn_chat_input_reader();
+    let mut typing_indicator = TypingIndicator::new(peer_name.clone());
+    let mut tick = tokio::time::interval(Duration::from_millis(350));
 
     println!("Chat started with {peer_name}. Type /quit to close the session.");
+    print!("> ");
+    std::io::stdout().flush()?;
 
     loop {
         tokio::select! {
-            line = stdin_lines.recv() => {
-                let Some(line) = line else {
+            input = input_events.recv() => {
+                let Some(input) = input else {
                     write_frame(&mut peer_writer, Frame::Close).await?;
                     break;
                 };
 
-                if line.trim() == "/quit" {
-                    write_frame(&mut peer_writer, Frame::Close).await?;
-                    break;
-                }
+                match input {
+                    ChatInput::Line(line) => {
+                        if line.trim() == "/quit" {
+                            write_frame(&mut peer_writer, Frame::Close).await?;
+                            break;
+                        }
 
-                write_frame(&mut peer_writer, Frame::Chat(line)).await?;
+                        write_frame(&mut peer_writer, Frame::Chat(line)).await?;
+                    }
+                    ChatInput::TypingStart => {
+                        write_frame(&mut peer_writer, Frame::TypingStart).await?;
+                    }
+                    ChatInput::TypingStop => {
+                        write_frame(&mut peer_writer, Frame::TypingStop).await?;
+                    }
+                    ChatInput::Closed => {
+                        write_frame(&mut peer_writer, Frame::Close).await?;
+                        break;
+                    }
+                }
             }
             frame = read_frame(&mut peer_reader) => {
                 match frame? {
                     Frame::Hello(_) => {}
                     Frame::Chat(message) => {
+                        typing_indicator.stop()?;
                         println!("{peer_name}> {}", sanitize_for_terminal(&message))
                     }
+                    Frame::TypingStart => typing_indicator.start()?,
+                    Frame::TypingStop => typing_indicator.stop()?,
                     Frame::Close => {
+                        typing_indicator.stop()?;
                         println!("Peer closed the session.");
                         break;
                     }
                 }
+            }
+            _ = tick.tick() => {
+                typing_indicator.tick()?;
             }
             _ = tokio::signal::ctrl_c() => {
                 let _ = write_frame(&mut peer_writer, Frame::Close).await;
@@ -87,20 +117,78 @@ where
     Ok(())
 }
 
-pub(crate) fn spawn_stdin_reader() -> tokio::sync::mpsc::UnboundedReceiver<String> {
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum ChatInput {
+    Line(String),
+    TypingStart,
+    TypingStop,
+    Closed,
+}
+
+pub(crate) fn spawn_chat_input_reader() -> tokio::sync::mpsc::UnboundedReceiver<ChatInput> {
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
 
     std::thread::spawn(move || {
+        let _raw_mode = RawModeGuard::enable();
+        let mut line = String::new();
+        let mut typing = false;
+
         loop {
-            let mut line = String::new();
-            match std::io::stdin().read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    trim_line_endings(&mut line);
-                    if sender.send(line).is_err() {
-                        break;
+            let Ok(Event::Key(key)) = read() else {
+                continue;
+            };
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let _ = sender.send(ChatInput::Closed);
+                    break;
+                }
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let _ = sender.send(ChatInput::Closed);
+                    break;
+                }
+                KeyCode::Char(ch) => {
+                    line.push(ch);
+                    print!("{ch}");
+                    let _ = std::io::stdout().flush();
+                    if !typing {
+                        typing = true;
+                        if sender.send(ChatInput::TypingStart).is_err() {
+                            break;
+                        }
                     }
                 }
+                KeyCode::Backspace => {
+                    if line.pop().is_some() {
+                        print!("\u{8} \u{8}");
+                        let _ = std::io::stdout().flush();
+                    }
+                    if line.is_empty() && typing {
+                        typing = false;
+                        if sender.send(ChatInput::TypingStop).is_err() {
+                            break;
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    println!();
+                    if typing {
+                        typing = false;
+                        if sender.send(ChatInput::TypingStop).is_err() {
+                            break;
+                        }
+                    }
+                    let submitted = std::mem::take(&mut line);
+                    if sender.send(ChatInput::Line(submitted)).is_err() {
+                        break;
+                    }
+                    print!("> ");
+                    let _ = std::io::stdout().flush();
+                }
+                _ => {}
             }
         }
     });
@@ -108,9 +196,67 @@ pub(crate) fn spawn_stdin_reader() -> tokio::sync::mpsc::UnboundedReceiver<Strin
     receiver
 }
 
-fn trim_line_endings(line: &mut String) {
-    while line.ends_with(['\n', '\r']) {
-        line.pop();
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enable() -> Option<Self> {
+        enable_raw_mode().ok()?;
+        Some(Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+    }
+}
+
+pub(crate) struct TypingIndicator {
+    peer_name: String,
+    active: bool,
+    dots: usize,
+}
+
+impl TypingIndicator {
+    pub(crate) fn new(peer_name: String) -> Self {
+        Self {
+            peer_name,
+            active: false,
+            dots: 0,
+        }
+    }
+
+    pub(crate) fn start(&mut self) -> Result<()> {
+        self.active = true;
+        self.dots = 0;
+        self.render()
+    }
+
+    pub(crate) fn stop(&mut self) -> Result<()> {
+        if self.active {
+            self.active = false;
+            print!("\r\x1b[2K> ");
+            std::io::stdout().flush()?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn tick(&mut self) -> Result<()> {
+        if self.active {
+            self.dots = (self.dots + 1) % 4;
+            self.render()?;
+        }
+        Ok(())
+    }
+
+    fn render(&self) -> Result<()> {
+        let dots = ".".repeat(self.dots);
+        print!(
+            "\r\x1b[2K{} is typing{dots:<3}",
+            sanitize_for_terminal(&self.peer_name)
+        );
+        std::io::stdout().flush()?;
+        Ok(())
     }
 }
 

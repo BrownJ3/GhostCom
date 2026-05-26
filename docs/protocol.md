@@ -27,8 +27,14 @@ payload
 ```text
 hello
 chat
+typing_start
+typing_stop
 close
 ```
+
+Typing frames are encrypted end-to-end like chat frames. They carry no payload,
+are never persisted, and are only used for transient terminal presence during an
+active session.
 
 ## Size Limits
 
@@ -44,4 +50,3 @@ These limits protect the terminal UI and reduce memory-exhaustion risk.
 ## Compatibility
 
 Protocol changes must update this document and include tests for rejecting incompatible or malformed frames.
-

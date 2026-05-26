@@ -1,6 +1,6 @@
 use crate::protocol::frame::validate_display_name;
 use crate::terminal::line_ui::{
-    confirm_peer, prompt_display_name, sanitize_for_terminal, spawn_stdin_reader,
+    ChatInput, confirm_peer, prompt_display_name, sanitize_for_terminal, spawn_chat_input_reader,
 };
 use anyhow::{Result, bail};
 use futures_util::{SinkExt, StreamExt};
@@ -121,6 +121,7 @@ async fn run_noise_chat(mut socket: RelaySocket, role: RelayRole) -> Result<()> 
             RelayFrame::Hello(name) => break name,
             RelayFrame::Close => bail!("peer closed before sending display name"),
             RelayFrame::Chat(_) => {}
+            RelayFrame::TypingStart | RelayFrame::TypingStop => {}
         }
     };
 
@@ -169,36 +170,61 @@ async fn run_chat_loop(
     mut transport: TransportState,
     peer_name: String,
 ) -> Result<()> {
-    let mut stdin_lines = spawn_stdin_reader();
+    let mut input_events = spawn_chat_input_reader();
+    let mut typing_indicator = crate::terminal::line_ui::TypingIndicator::new(peer_name.clone());
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(350));
 
     println!("Relay chat started with {peer_name}. Type /quit to close the session.");
+    print!("> ");
+    std::io::Write::flush(&mut std::io::stdout())?;
 
     loop {
         tokio::select! {
-            line = stdin_lines.recv() => {
-                let Some(line) = line else {
+            input = input_events.recv() => {
+                let Some(input) = input else {
                     let _ = send_encrypted(&mut socket, &mut transport, &RelayFrame::Close).await;
                     break;
                 };
 
-                if line.trim() == "/quit" {
-                    let _ = send_encrypted(&mut socket, &mut transport, &RelayFrame::Close).await;
-                    break;
-                }
+                match input {
+                    ChatInput::Line(line) => {
+                        if line.trim() == "/quit" {
+                            let _ = send_encrypted(&mut socket, &mut transport, &RelayFrame::Close).await;
+                            break;
+                        }
 
-                send_encrypted(&mut socket, &mut transport, &RelayFrame::Chat(line)).await?;
+                        send_encrypted(&mut socket, &mut transport, &RelayFrame::Chat(line)).await?;
+                    }
+                    ChatInput::TypingStart => {
+                        send_encrypted(&mut socket, &mut transport, &RelayFrame::TypingStart).await?;
+                    }
+                    ChatInput::TypingStop => {
+                        send_encrypted(&mut socket, &mut transport, &RelayFrame::TypingStop).await?;
+                    }
+                    ChatInput::Closed => {
+                        let _ = send_encrypted(&mut socket, &mut transport, &RelayFrame::Close).await;
+                        break;
+                    }
+                }
             }
             frame = read_encrypted(&mut socket, &mut transport) => {
                 match frame? {
                     RelayFrame::Hello(_) => {}
                     RelayFrame::Chat(message) => {
+                        typing_indicator.stop()?;
                         println!("{peer_name}> {}", sanitize_for_terminal(&message))
                     }
+                    RelayFrame::TypingStart => typing_indicator.start()?,
+                    RelayFrame::TypingStop => typing_indicator.stop()?,
                     RelayFrame::Close => {
+                        typing_indicator.stop()?;
                         println!("Peer closed the session.");
                         break;
                     }
                 }
+            }
+            _ = tick.tick() => {
+                typing_indicator.tick()?;
             }
             _ = tokio::signal::ctrl_c() => {
                 let _ = send_encrypted(&mut socket, &mut transport, &RelayFrame::Close).await;
@@ -213,6 +239,8 @@ async fn run_chat_loop(
 enum RelayFrame {
     Hello(String),
     Chat(String),
+    TypingStart,
+    TypingStop,
     Close,
 }
 
@@ -233,6 +261,8 @@ impl RelayFrame {
                 out.extend_from_slice(message.as_bytes());
                 Ok(out)
             }
+            Self::TypingStart => Ok(vec![4]),
+            Self::TypingStop => Ok(vec![5]),
             Self::Close => Ok(vec![3]),
         }
     }
@@ -254,6 +284,8 @@ impl RelayFrame {
                 }
                 Ok(Self::Chat(String::from_utf8(payload.to_vec())?))
             }
+            4 if payload.is_empty() => Ok(Self::TypingStart),
+            5 if payload.is_empty() => Ok(Self::TypingStop),
             3 if payload.is_empty() => Ok(Self::Close),
             _ => bail!("unknown relay frame"),
         }

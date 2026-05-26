@@ -12,6 +12,8 @@ const MAX_NAME_PAYLOAD: usize = 64;
 pub enum Frame {
     Hello(String),
     Chat(String),
+    TypingStart,
+    TypingStop,
     Close,
 }
 
@@ -20,6 +22,8 @@ enum FrameType {
     Hello = 1,
     Chat = 2,
     Close = 3,
+    TypingStart = 4,
+    TypingStop = 5,
 }
 
 impl FrameType {
@@ -28,6 +32,8 @@ impl FrameType {
             1 => Ok(Self::Hello),
             2 => Ok(Self::Chat),
             3 => Ok(Self::Close),
+            4 => Ok(Self::TypingStart),
+            5 => Ok(Self::TypingStop),
             _ => bail!("unknown frame type"),
         }
     }
@@ -49,6 +55,8 @@ where
             }
             (FrameType::Chat, bytes)
         }
+        Frame::TypingStart => (FrameType::TypingStart, Vec::new()),
+        Frame::TypingStop => (FrameType::TypingStop, Vec::new()),
         Frame::Close => (FrameType::Close, Vec::new()),
     };
 
@@ -106,6 +114,18 @@ where
             }
             Ok(Frame::Chat(String::from_utf8(payload)?))
         }
+        FrameType::TypingStart => {
+            if !payload.is_empty() {
+                bail!("typing frame must be empty");
+            }
+            Ok(Frame::TypingStart)
+        }
+        FrameType::TypingStop => {
+            if !payload.is_empty() {
+                bail!("typing frame must be empty");
+            }
+            Ok(Frame::TypingStop)
+        }
         FrameType::Close => {
             if !payload.is_empty() {
                 bail!("close frame must be empty");
@@ -162,6 +182,17 @@ mod tests {
 
         let frame = read_frame(&mut server).await.unwrap();
         assert_eq!(frame, Frame::Hello("NovaSignal1234".to_string()));
+    }
+
+    #[tokio::test]
+    async fn round_trips_typing_frames() {
+        let (mut client, mut server) = duplex(1024);
+
+        write_frame(&mut client, Frame::TypingStart).await.unwrap();
+        write_frame(&mut client, Frame::TypingStop).await.unwrap();
+
+        assert_eq!(read_frame(&mut server).await.unwrap(), Frame::TypingStart);
+        assert_eq!(read_frame(&mut server).await.unwrap(), Frame::TypingStop);
     }
 
     #[tokio::test]

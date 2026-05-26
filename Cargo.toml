@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
+crossterm = "0.28"
 futures-util = "0.3"
 rcgen = "0.12"
 rustls = "0.23"

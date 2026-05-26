@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $Repo = if ($env:GHSTPRTCL_REPO) { $env:GHSTPRTCL_REPO } else { "BrownJ3/GhostCom" }
-$Version = if ($env:GHSTPRTCL_VERSION) { $env:GHSTPRTCL_VERSION } else { "v0.1.0-alpha.6" }
+$Version = if ($env:GHSTPRTCL_VERSION) { $env:GHSTPRTCL_VERSION } else { "v0.1.0-alpha.7" }
 $InstallDir = if ($env:GHSTPRTCL_INSTALL_DIR) { $env:GHSTPRTCL_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "ghstprtcl\bin" }
 
 if (-not [Environment]::Is64BitOperatingSystem) {
