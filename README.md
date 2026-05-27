@@ -114,13 +114,6 @@ Connect from another terminal or machine:
 cargo run -- connect <host>:7777
 ```
 
-Or use the rendezvous flow with a deployed GhostCom site:
-
-```text
-cargo run -- call --rendezvous wss://your-site.fly.dev/rv
-cargo run -- join <invite-code> --rendezvous wss://your-site.fly.dev/rv
-```
-
 For the default cross-network relay flow during development:
 
 ```text
@@ -132,8 +125,6 @@ cargo run -- relay-join <invite-code>
 
 ```text
 ghstprtcl
-ghstprtcl call --rendezvous wss://your-site.fly.dev/rv
-ghstprtcl join <invite-code> --rendezvous wss://your-site.fly.dev/rv
 ghstprtcl relay-call --relay wss://ghostcom-site.fly.dev/relay
 ghstprtcl relay-join <invite-code> --relay wss://ghostcom-site.fly.dev/relay
 ghstprtcl listen --bind 0.0.0.0:7777
@@ -162,7 +153,7 @@ Release builds are published through GitHub Releases when a `v*` tag is pushed. 
 
 The alpha installers currently default to `v0.1.0-alpha.12` because prereleases are not always exposed through GitHub's `latest` release URL. To override the version later, set `GHSTPRTCL_VERSION`.
 
-The scripts download release assets from GitHub, verify the detached signature on `SHA256SUMS`, and then verify the selected archive checksum before installing. The macOS/Linux installer requires `openssl` and adds the install directory to the user's shell profile when needed. The Windows installer requires PowerShell 7 or newer for signature verification and adds the install directory to the user's PATH. The Fly service does not host installer scripts; it is reserved for the rendezvous and relay runtime. Intel macOS is not included in the current alpha binary set.
+The scripts download release assets from GitHub, verify the detached signature on `SHA256SUMS`, and then verify the selected archive checksum before installing. The macOS/Linux installer requires `openssl` and adds the install directory to the user's shell profile when needed. The Windows installer requires PowerShell 7 or newer for signature verification and adds the install directory to the user's PATH. The Fly service does not host installer scripts; it is reserved for the relay runtime and minimal public site. Intel macOS is not included in the current alpha binary set.
 
 ## Development Status
 
@@ -174,8 +165,8 @@ This repository has an initial encrypted 1-to-1 terminal chat MVP:
 - Manual shared session verification code confirmation.
 - Ephemeral display names, chosen or generated per session.
 - End-to-end encrypted transient typing indicators are implemented but disabled by default until capability negotiation is added.
-- Optional WebSocket rendezvous for invite-code based direct connection setup.
 - Optional WebSocket relay using end-to-end Noise encryption.
+- Advanced opt-in WebSocket rendezvous for private direct-connection experiments.
 - Bounded message frames.
 - No application logs, config file, contact book, or message persistence.
 

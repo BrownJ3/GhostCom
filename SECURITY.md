@@ -86,7 +86,7 @@ Installer scripts must verify the checksum signature before trusting `SHA256SUMS
 
 ## Rendezvous Security
 
-The rendezvous server is not trusted for confidentiality or authenticity. It may help peers exchange temporary connection information, but endpoint-to-endpoint TLS verification remains mandatory.
+The rendezvous server is not trusted for confidentiality or authenticity. It may help peers exchange temporary connection information, but endpoint-to-endpoint TLS verification remains mandatory. Hosted deployments disable rendezvous by default because direct inbound peer connections are unreliable across common NAT and firewall environments.
 
 The rendezvous server must:
 

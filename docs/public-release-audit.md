@@ -25,7 +25,8 @@ repository is opened:
 - GitHub repository path: `BrownJ3/GhostCom`.
 - Fly app hostname: `ghostcom-site.fly.dev`.
 - Default relay endpoint: `wss://ghostcom-site.fly.dev/relay`.
-- Default rendezvous endpoint: `wss://ghostcom-site.fly.dev/rv`.
+- Advanced rendezvous endpoint, disabled by default on hosted deployments:
+  `wss://ghostcom-site.fly.dev/rv`.
 - Commit author metadata has been rewritten to
   `GhostCom Maintainers <noreply@ghostcom.local>`.
 

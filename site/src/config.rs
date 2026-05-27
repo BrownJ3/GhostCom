@@ -15,7 +15,7 @@ impl SiteConfig {
     pub fn from_env() -> Self {
         Self {
             relay_enabled: bool_env(RELAY_ENABLED_ENV, true),
-            rendezvous_enabled: bool_env(RENDEZVOUS_ENABLED_ENV, true),
+            rendezvous_enabled: bool_env(RENDEZVOUS_ENABLED_ENV, false),
             access_token: env::var(ACCESS_TOKEN_ENV)
                 .ok()
                 .map(|token| token.trim().to_string())

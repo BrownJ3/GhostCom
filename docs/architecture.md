@@ -52,9 +52,12 @@ Required properties:
 
 Future versions may evaluate `libp2p` with Noise if NAT traversal, peer discovery, or richer peer-to-peer networking becomes necessary.
 
-## Rendezvous
+## Advanced Direct Rendezvous
 
-The optional rendezvous service runs with the website server at `/rv`.
+The optional rendezvous service can run with the website server at `/rv`, but it
+is disabled by default for hosted deployments. Direct inbound peer connections
+are unreliable across common NATs, firewalls, mobile networks, and workplace
+networks, so relay mode is the normal cross-network path.
 
 Required properties:
 
@@ -70,7 +73,8 @@ The rendezvous server is treated as untrusted. It helps clients exchange a tempo
 
 ## Relay
 
-The optional relay service runs with the website server at `/relay`.
+The relay service runs with the website server at `/relay` and is the default
+cross-network path.
 
 Required properties:
 

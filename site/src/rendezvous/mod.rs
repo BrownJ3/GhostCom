@@ -200,10 +200,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        app::{app, app_with_config},
-        config::SiteConfig,
-    };
+    use crate::{app::app_with_config, config::SiteConfig};
     use futures_util::{SinkExt, StreamExt};
     use serde_json::json;
     use std::net::SocketAddr;
@@ -216,7 +213,8 @@ mod tests {
         let server = tokio::spawn(async move {
             axum::serve(
                 listener,
-                app().into_make_service_with_connect_info::<SocketAddr>(),
+                app_with_config(SiteConfig::for_tests(true, true, None))
+                    .into_make_service_with_connect_info::<SocketAddr>(),
             )
             .await
             .unwrap();

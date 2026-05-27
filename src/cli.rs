@@ -2,7 +2,6 @@ use anyhow::{Result, bail};
 use std::io::{self, Write};
 use std::net::SocketAddr;
 
-const DEFAULT_RENDEZVOUS_URL: &str = "wss://ghostcom-site.fly.dev/rv";
 const DEFAULT_RELAY_URL: &str = "wss://ghostcom-site.fly.dev/relay";
 
 pub enum Command {
@@ -72,7 +71,7 @@ pub fn parse() -> Result<Command> {
         }
         "call" => {
             let mut bind = "0.0.0.0:7777".parse()?;
-            let mut rendezvous = DEFAULT_RENDEZVOUS_URL.to_string();
+            let mut rendezvous = None;
 
             while let Some(arg) = args.next() {
                 match arg.as_str() {
@@ -86,11 +85,17 @@ pub fn parse() -> Result<Command> {
                         let Some(value) = args.next() else {
                             bail!("{arg} requires a WebSocket URL");
                         };
-                        rendezvous = value;
+                        rendezvous = Some(value);
                     }
                     other => bail!("unknown call option: {other}"),
                 }
             }
+
+            let Some(rendezvous) = rendezvous else {
+                bail!(
+                    "call requires --rendezvous for advanced direct setup; use relay-call for the default hosted flow"
+                );
+            };
 
             Ok(Command::Call { bind, rendezvous })
         }
@@ -99,7 +104,7 @@ pub fn parse() -> Result<Command> {
                 print_usage();
                 bail!("missing invite code");
             };
-            let mut rendezvous = DEFAULT_RENDEZVOUS_URL.to_string();
+            let mut rendezvous = None;
 
             while let Some(arg) = args.next() {
                 match arg.as_str() {
@@ -107,11 +112,17 @@ pub fn parse() -> Result<Command> {
                         let Some(value) = args.next() else {
                             bail!("{arg} requires a WebSocket URL");
                         };
-                        rendezvous = value;
+                        rendezvous = Some(value);
                     }
                     other => bail!("unknown join option: {other}"),
                 }
             }
+
+            let Some(rendezvous) = rendezvous else {
+                bail!(
+                    "join requires --rendezvous for advanced direct setup; use relay-join for the default hosted flow"
+                );
+            };
 
             Ok(Command::Join { code, rendezvous })
         }
@@ -146,7 +157,7 @@ pub fn parse() -> Result<Command> {
 
 fn print_usage() {
     eprintln!(
-        "GhostCom\n\nUsage:\n  ghstprtcl\n  ghstprtcl relay-call [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-join <invite-code> [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl call [--bind 0.0.0.0:7777] [--rendezvous {DEFAULT_RENDEZVOUS_URL}]\n  ghstprtcl join <invite-code> [--rendezvous {DEFAULT_RENDEZVOUS_URL}]\n  ghstprtcl listen [--bind 0.0.0.0:7777]\n  ghstprtcl connect <host>:7777"
+        "GhostCom\n\nUsage:\n  ghstprtcl\n  ghstprtcl relay-call [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-join <invite-code> [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl listen [--bind 0.0.0.0:7777]\n  ghstprtcl connect <host>:7777\n\nAdvanced direct rendezvous:\n  ghstprtcl call --rendezvous wss://your-private-site/rv [--bind 0.0.0.0:7777]\n  ghstprtcl join <invite-code> --rendezvous wss://your-private-site/rv"
     );
 }
 
