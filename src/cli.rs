@@ -162,10 +162,13 @@ fn print_usage() {
 }
 
 fn interactive_menu() -> Result<Command> {
-    println!("GhostCom");
+    println!("==================================================");
+    println!(" GhostCom");
+    println!(" Secure relay chat. No logs. No saved sessions.");
+    println!("==================================================");
     println!();
-    println!("1. Start secure chat");
-    println!("2. Join secure chat");
+    println!("  1  Start secure chat");
+    println!("  2  Join secure chat");
     println!();
 
     match prompt("Choose [1]: ")?.trim() {
@@ -173,7 +176,7 @@ fn interactive_menu() -> Result<Command> {
             relay: DEFAULT_RELAY_URL.to_string(),
         }),
         "2" => {
-            let code = prompt("Invite code: ")?;
+            let code = prompt("Paste invite code: ")?;
             let code = code.trim().to_string();
             if code.is_empty() {
                 bail!("invite code is required");

@@ -1,7 +1,7 @@
 use crate::protocol::frame::validate_display_name;
 use crate::terminal::line_ui::{
-    ChatInput, ChatInputReader, chat_println, chat_prompt, confirm_peer, prompt_display_name,
-    sanitize_for_terminal, typing_enabled,
+    ChatInput, ChatInputReader, chat_println, chat_prompt, chat_status, chat_success, confirm_peer,
+    print_invite_box, prompt_display_name, sanitize_for_terminal, typing_enabled,
 };
 use anyhow::{Result, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -51,14 +51,14 @@ pub enum RelayRole {
 }
 
 pub async fn call(relay_url: String) -> Result<()> {
-    println!("Creating relay invite...");
+    chat_status("Creating secure invite...")?;
     let secret = InviteSecret::generate();
     let socket = create_relay(&relay_url, &secret).await?;
     run_noise_chat(socket, RelayRole::Caller, Some(secret)).await
 }
 
 pub async fn join(mut code: String, relay_url: String) -> Result<()> {
-    println!("Joining relay invite...");
+    chat_status("Joining secure invite...")?;
     let invite = match RelayInvite::parse(&code) {
         Ok(invite) => invite,
         Err(error) => {
@@ -84,11 +84,11 @@ async fn create_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySoc
     match read_setup(&mut socket).await? {
         ServerMessage::Created { code } => {
             validate_relay_code(&code)?;
-            println!();
-            println!("Relay invite code:");
-            println!("  {}", RelayInvite::format(&code, secret));
-            println!();
-            println!("Share this code with your peer. Waiting for them to join...");
+            print_invite_box(
+                "Share this invite code with your peer:",
+                &RelayInvite::format(&code, secret),
+            )?;
+            chat_status("Waiting for peer to join...")?;
         }
         ServerMessage::Error { message } => {
             bail!("relay error: {}", sanitize_for_terminal(&message))
@@ -99,7 +99,7 @@ async fn create_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySoc
     loop {
         match read_setup(&mut socket).await? {
             ServerMessage::PeerJoined => {
-                println!("Peer joined relay. Starting end-to-end Noise handshake...");
+                chat_status("Peer joined. Establishing end-to-end encryption...")?;
                 return Ok(socket);
             }
             ServerMessage::Error { message } => {
@@ -125,7 +125,7 @@ async fn join_relay(relay_url: &str, code: &str) -> Result<RelaySocket> {
 
     match read_setup(&mut socket).await? {
         ServerMessage::Joined => {
-            println!("Relay joined. Starting end-to-end Noise handshake...");
+            chat_status("Joined relay. Establishing end-to-end encryption...")?;
             Ok(socket)
         }
         ServerMessage::Error { message } => {
@@ -153,7 +153,7 @@ async fn run_noise_chat(
     if let Some(secret) = invite_secret {
         verify_invite_secret(&mut socket, &mut transport, role, &secret, &handshake_hash).await?;
         handshake_hash.zeroize();
-        println!("Invite verified end-to-end.");
+        chat_success("Invite verified end-to-end.")?;
     } else if !confirm_peer(&verification_code).await? {
         handshake_hash.zeroize();
         bail!("session verification was not confirmed");
@@ -269,9 +269,10 @@ async fn run_chat_loop(
     let typing_enabled = typing_enabled();
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(350));
 
-    chat_println(&format!(
-        "Relay chat started with {peer_name}. Type /quit to close the session."
-    ))?;
+    chat_println("")?;
+    chat_println("--------------------------------------------------")?;
+    chat_success(&format!("Connected to {peer_name}. Type /quit to close."))?;
+    chat_println("--------------------------------------------------")?;
     chat_prompt()?;
 
     loop {

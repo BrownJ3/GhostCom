@@ -16,8 +16,10 @@ use zeroize::Zeroize;
 
 pub async fn confirm_peer(verification_code: &str) -> Result<bool> {
     println!();
-    println!("Session verification code:");
-    println!("  {verification_code}");
+    println!("Session verification");
+    println!("--------------------------------------------------");
+    println!("{verification_code}");
+    println!("--------------------------------------------------");
     println!();
     println!("This code must exactly match on both terminals.");
     print!("Type YES to start chatting, or anything else to disconnect: ");
@@ -36,7 +38,7 @@ fn is_confirmation(input: &str) -> bool {
 
 pub fn prompt_display_name(default_name: &str) -> Result<String> {
     println!();
-    print!("Display name for this session [{default_name}]: ");
+    print!("Display name [{default_name}]: ");
     std::io::stdout().flush()?;
 
     let mut input = String::new();
@@ -322,13 +324,32 @@ impl TypingIndicator {
 }
 
 pub(crate) fn chat_prompt() -> Result<()> {
-    print!("> ");
+    print!("you> ");
     std::io::stdout().flush()?;
     Ok(())
 }
 
 pub(crate) fn chat_println(line: &str) -> Result<()> {
     print!("{line}\r\n");
+    std::io::stdout().flush()?;
+    Ok(())
+}
+
+pub(crate) fn chat_status(line: &str) -> Result<()> {
+    chat_println(&format!("[status] {line}"))
+}
+
+pub(crate) fn chat_success(line: &str) -> Result<()> {
+    chat_println(&format!("[secure] {line}"))
+}
+
+pub(crate) fn print_invite_box(label: &str, code: &str) -> Result<()> {
+    println!();
+    println!("{label}");
+    println!("--------------------------------------------------");
+    println!("{code}");
+    println!("--------------------------------------------------");
+    println!();
     std::io::stdout().flush()?;
     Ok(())
 }
