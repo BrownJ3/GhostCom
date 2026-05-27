@@ -2,7 +2,7 @@
 set -eu
 
 REPO="${GHSTPRTCL_REPO:-BrownJ3/GhostCom}"
-VERSION="${GHSTPRTCL_VERSION:-v0.1.0-alpha.12}"
+VERSION="${GHSTPRTCL_VERSION:-v0.1.0-alpha.13}"
 INSTALL_DIR="${GHSTPRTCL_INSTALL_DIR:-$HOME/.local/bin}"
 
 need() {

@@ -166,8 +166,6 @@ fn interactive_menu() -> Result<Command> {
     println!();
     println!("1. Start secure chat");
     println!("2. Join secure chat");
-    println!("3. Listen directly");
-    println!("4. Connect directly");
     println!();
 
     match prompt("Choose [1]: ")?.trim() {
@@ -184,17 +182,6 @@ fn interactive_menu() -> Result<Command> {
                 code,
                 relay: DEFAULT_RELAY_URL.to_string(),
             })
-        }
-        "3" => Ok(Command::Listen {
-            bind: "0.0.0.0:7777".parse()?,
-        }),
-        "4" => {
-            let target = prompt("Peer address, for example 192.168.1.20:7777: ")?;
-            let target = target.trim().to_string();
-            if target.is_empty() {
-                bail!("peer address is required");
-            }
-            Ok(Command::Connect { target })
         }
         other => bail!("unknown menu option: {other}"),
     }
