@@ -1,5 +1,6 @@
 mod app;
 mod client_ip;
+mod config;
 mod page;
 mod rate_limit;
 mod relay;

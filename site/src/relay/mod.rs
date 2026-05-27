@@ -20,8 +20,9 @@ const FIRST_MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
 const ROOM_WAIT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MAX_WS_TEXT_BYTES: usize = 512;
 const MAX_RELAY_BINARY_BYTES: usize = 32 * 1024;
-const MAX_RELAY_BYTES_PER_DIRECTION: u64 = 64 * 1024 * 1024;
+const MAX_RELAY_BYTES_PER_DIRECTION: u64 = 8 * 1024 * 1024;
 const RELAY_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const MAX_RELAY_SESSION_DURATION: Duration = Duration::from_secs(60 * 60);
 
 pub async fn relay_ws(
     State(state): State<RelayState>,
@@ -36,6 +37,11 @@ pub async fn relay_ws(
 }
 
 async fn handle_socket(mut socket: WebSocket, state: RelayState, remote_ip: IpAddr) {
+    if !state.relay_enabled() {
+        send_error(&mut socket, "relay is unavailable").await;
+        return;
+    }
+
     if !state.try_acquire_connection().await {
         send_error(&mut socket, "relay server has too many active connections").await;
         return;
@@ -70,8 +76,20 @@ async fn handle_socket_inner(mut socket: WebSocket, state: RelayState, remote_ip
     state.cleanup_expired().await;
 
     match client_message {
-        ClientMessage::Create => handle_create(socket, state, remote_ip).await,
-        ClientMessage::Join { code } => handle_join(socket, state, remote_ip, code).await,
+        ClientMessage::Create { access_token } => {
+            if !state.access_token_matches(access_token.as_deref()) {
+                send_error(&mut socket, "relay access denied").await;
+                return;
+            }
+            handle_create(socket, state, remote_ip).await;
+        }
+        ClientMessage::Join { code, access_token } => {
+            if !state.access_token_matches(access_token.as_deref()) {
+                send_error(&mut socket, "relay access denied").await;
+                return;
+            }
+            handle_join(socket, state, remote_ip, code).await;
+        }
     }
 }
 
@@ -127,12 +145,7 @@ async fn handle_create(mut caller: WebSocket, state: RelayState, remote_ip: IpAd
     state.release_session().await;
 }
 
-async fn handle_join(
-    mut joiner: WebSocket,
-    state: RelayState,
-    remote_ip: IpAddr,
-    code: String,
-) {
+async fn handle_join(mut joiner: WebSocket, state: RelayState, remote_ip: IpAddr, code: String) {
     if !state.allow_join(remote_ip).await {
         send_error(&mut joiner, "too many relay join attempts").await;
         return;
@@ -170,9 +183,13 @@ async fn bridge(caller: WebSocket, joiner: WebSocket) {
     let caller_to_joiner = forward_binary(caller_rx, joiner_tx);
     let joiner_to_caller = forward_binary(joiner_rx, caller_tx);
 
+    let session_deadline = tokio::time::sleep(MAX_RELAY_SESSION_DURATION);
+    tokio::pin!(session_deadline);
+
     tokio::select! {
         _ = caller_to_joiner => {}
         _ = joiner_to_caller => {}
+        _ = &mut session_deadline => {}
     }
 }
 

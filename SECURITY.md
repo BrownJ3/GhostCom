@@ -99,36 +99,53 @@ The rendezvous server must:
 - Avoid receiving private keys or session secrets.
 - Avoid durable storage of invite state.
 - Per-IP rate limits.
+- Global rate limits.
 - Global active room limits.
 - Global active connection limits.
+- Optional server-side access token for private deployments.
+- Emergency enable/disable switches for public WebSocket services.
 - Operational metrics that avoid sensitive values.
 
 Current rendezvous abuse limits:
 
-- 512 active rendezvous rooms.
-- 1024 active rendezvous WebSocket connections.
-- 30 WebSocket upgrade attempts per IP per minute.
-- 10 invite creation attempts per IP per five minutes.
-- 60 invite join attempts per IP per minute.
+- 64 active rendezvous rooms.
+- 128 active rendezvous WebSocket connections.
+- 20 WebSocket upgrade attempts per IP per minute.
+- 6 invite creation attempts per IP per five minutes.
+- 30 invite join attempts per IP per minute.
+- 180 global WebSocket upgrade attempts per minute.
+- 40 global invite creation attempts per five minutes.
+- 180 global invite join attempts per minute.
 
-On Fly.io, per-IP limits use proxy-provided client IP headers, preferring
-`Fly-Client-IP` and falling back to `X-Forwarded-For` before the socket peer
-address. Deployments behind different proxies must verify equivalent trusted
-client-IP handling.
+On Fly.io, per-IP limits use the proxy-provided `Fly-Client-IP` header before
+falling back to the socket peer address. The service intentionally ignores
+`X-Forwarded-For` because it is commonly user-supplied unless the deployment
+has explicit trusted-proxy enforcement.
 
 The rendezvous server can still observe IP addresses and timing. GhostCom must not claim that rendezvous is metadata-free.
 
 Current relay abuse limits:
 
-- 256 active waiting relay rooms.
-- 1024 active relay WebSocket connections.
-- 256 active paired relay sessions.
-- 60 WebSocket setup attempts per IP per minute.
-- 10 invite creation attempts per IP per five minutes.
-- 60 invite join attempts per IP per minute.
+- 64 active waiting relay rooms.
+- 128 active relay WebSocket connections.
+- 32 active paired relay sessions.
+- 30 WebSocket setup attempts per IP per minute.
+- 6 invite creation attempts per IP per five minutes.
+- 30 invite join attempts per IP per minute.
+- 240 global WebSocket setup attempts per minute.
+- 40 global invite creation attempts per five minutes.
+- 180 global invite join attempts per minute.
 - 32 KiB maximum relayed binary frame size.
-- 64 MiB maximum relayed bytes per direction.
+- 8 MiB maximum relayed bytes per direction.
 - 15 minute idle timeout for paired relay forwarding.
+- 60 minute maximum paired relay session lifetime.
+
+Private or cost-sensitive deployments should set `GHSTCOM_RELAY_ACCESS_TOKEN`
+as a deployment secret and distribute the same value to authorized clients
+through a separate trusted channel. The value must not be committed to the
+repository. Operators can set `GHSTCOM_RELAY_ENABLED=false` or
+`GHSTCOM_RENDEZVOUS_ENABLED=false` to disable the costly WebSocket services
+without changing the public landing page.
 
 ## Reporting Vulnerabilities
 

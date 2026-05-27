@@ -1,5 +1,8 @@
 use super::protocol::ServerMessage;
-use crate::rate_limit::{RateBucket, RateLimit, allow_event};
+use crate::{
+    config::SiteConfig,
+    rate_limit::{RateBucket, RateLimit, allow_event, allow_global_event},
+};
 use rand::{Rng, distributions::Alphanumeric, rngs::OsRng};
 use std::{
     collections::HashMap,
@@ -10,19 +13,26 @@ use std::{
 use tokio::sync::{Mutex, mpsc};
 
 const ROOM_TTL: Duration = Duration::from_secs(5 * 60);
-const MAX_ACTIVE_ROOMS: usize = 512;
-const MAX_ACTIVE_CONNECTIONS: usize = 1024;
-const WS_RATE_LIMIT: RateLimit = RateLimit::new(30, Duration::from_secs(60));
-const CREATE_RATE_LIMIT: RateLimit = RateLimit::new(10, Duration::from_secs(5 * 60));
-const JOIN_RATE_LIMIT: RateLimit = RateLimit::new(60, Duration::from_secs(60));
+const MAX_ACTIVE_ROOMS: usize = 64;
+const MAX_ACTIVE_CONNECTIONS: usize = 128;
+const WS_RATE_LIMIT: RateLimit = RateLimit::new(20, Duration::from_secs(60));
+const CREATE_RATE_LIMIT: RateLimit = RateLimit::new(6, Duration::from_secs(5 * 60));
+const JOIN_RATE_LIMIT: RateLimit = RateLimit::new(30, Duration::from_secs(60));
+const GLOBAL_WS_RATE_LIMIT: RateLimit = RateLimit::new(180, Duration::from_secs(60));
+const GLOBAL_CREATE_RATE_LIMIT: RateLimit = RateLimit::new(40, Duration::from_secs(5 * 60));
+const GLOBAL_JOIN_RATE_LIMIT: RateLimit = RateLimit::new(180, Duration::from_secs(60));
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RendezvousState {
+    config: SiteConfig,
     rooms: Arc<Mutex<HashMap<String, Room>>>,
     active_connections: Arc<Mutex<usize>>,
     ws_limits: Arc<Mutex<HashMap<IpAddr, RateBucket>>>,
     create_limits: Arc<Mutex<HashMap<IpAddr, RateBucket>>>,
     join_limits: Arc<Mutex<HashMap<IpAddr, RateBucket>>>,
+    global_ws_limit: Arc<Mutex<RateBucket>>,
+    global_create_limit: Arc<Mutex<RateBucket>>,
+    global_join_limit: Arc<Mutex<RateBucket>>,
 }
 
 pub struct Room {
@@ -38,6 +48,29 @@ impl Room {
 }
 
 impl RendezvousState {
+    pub fn new(config: SiteConfig) -> Self {
+        let now = Instant::now();
+        Self {
+            config,
+            rooms: Arc::default(),
+            active_connections: Arc::default(),
+            ws_limits: Arc::default(),
+            create_limits: Arc::default(),
+            join_limits: Arc::default(),
+            global_ws_limit: Arc::new(Mutex::new(RateBucket::new(now))),
+            global_create_limit: Arc::new(Mutex::new(RateBucket::new(now))),
+            global_join_limit: Arc::new(Mutex::new(RateBucket::new(now))),
+        }
+    }
+
+    pub fn rendezvous_enabled(&self) -> bool {
+        self.config.rendezvous_enabled
+    }
+
+    pub fn access_token_matches(&self, supplied: Option<&str>) -> bool {
+        self.config.token_matches(supplied)
+    }
+
     pub async fn cleanup_expired(&self) {
         let now = Instant::now();
         let mut rooms = self.rooms.lock().await;
@@ -60,15 +93,18 @@ impl RendezvousState {
     }
 
     pub async fn allow_ws(&self, ip: IpAddr) -> bool {
-        allow_event(&self.ws_limits, ip, WS_RATE_LIMIT).await
+        allow_global_event(&self.global_ws_limit, GLOBAL_WS_RATE_LIMIT).await
+            && allow_event(&self.ws_limits, ip, WS_RATE_LIMIT).await
     }
 
     pub async fn allow_create(&self, ip: IpAddr) -> bool {
-        allow_event(&self.create_limits, ip, CREATE_RATE_LIMIT).await
+        allow_global_event(&self.global_create_limit, GLOBAL_CREATE_RATE_LIMIT).await
+            && allow_event(&self.create_limits, ip, CREATE_RATE_LIMIT).await
     }
 
     pub async fn allow_join(&self, ip: IpAddr) -> bool {
-        allow_event(&self.join_limits, ip, JOIN_RATE_LIMIT).await
+        allow_global_event(&self.global_join_limit, GLOBAL_JOIN_RATE_LIMIT).await
+            && allow_event(&self.join_limits, ip, JOIN_RATE_LIMIT).await
     }
 
     pub async fn create_room(
@@ -127,7 +163,7 @@ mod tests {
 
     #[tokio::test]
     async fn connection_cap_releases_capacity() {
-        let state = RendezvousState::default();
+        let state = RendezvousState::new(SiteConfig::default());
 
         assert!(state.try_acquire_connection().await);
         state.release_connection().await;

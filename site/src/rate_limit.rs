@@ -22,6 +22,15 @@ pub struct RateBucket {
     events: u32,
 }
 
+impl RateBucket {
+    pub fn new(now: Instant) -> Self {
+        Self {
+            window_started_at: now,
+            events: 0,
+        }
+    }
+}
+
 pub async fn allow_event(
     buckets: &Mutex<HashMap<IpAddr, RateBucket>>,
     ip: IpAddr,
@@ -34,6 +43,23 @@ pub async fn allow_event(
         window_started_at: now,
         events: 0,
     });
+
+    if now.duration_since(bucket.window_started_at) > limit.window {
+        bucket.window_started_at = now;
+        bucket.events = 0;
+    }
+
+    if bucket.events >= limit.max_events {
+        return false;
+    }
+
+    bucket.events += 1;
+    true
+}
+
+pub async fn allow_global_event(bucket: &Mutex<RateBucket>, limit: RateLimit) -> bool {
+    let now = Instant::now();
+    let mut bucket = bucket.lock().await;
 
     if now.duration_since(bucket.window_started_at) > limit.window {
         bucket.window_started_at = now;

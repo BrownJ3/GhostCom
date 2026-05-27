@@ -15,6 +15,7 @@ use zeroize::Zeroize;
 
 type RelaySocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
+const ACCESS_TOKEN_ENV: &str = "GHSTCOM_RELAY_ACCESS_TOKEN";
 const MAX_RELAY_SETUP_BYTES: usize = 512;
 const MAX_NOISE_MESSAGE_BYTES: usize = 32 * 1024;
 const MAX_CHAT_MESSAGE_BYTES: usize = 8 * 1024;
@@ -25,8 +26,13 @@ const INVITE_AUTH_PROOF_BYTES: usize = 32;
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
-    Create,
-    Join { code: String },
+    Create {
+        access_token: Option<String>,
+    },
+    Join {
+        code: String,
+        access_token: Option<String>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,7 +73,13 @@ pub async fn join(mut code: String, relay_url: String) -> Result<()> {
 
 async fn create_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySocket> {
     let (mut socket, _) = connect_async(relay_url).await?;
-    send_setup(&mut socket, ClientMessage::Create).await?;
+    send_setup(
+        &mut socket,
+        ClientMessage::Create {
+            access_token: relay_access_token(),
+        },
+    )
+    .await?;
 
     match read_setup(&mut socket).await? {
         ServerMessage::Created { code } => {
@@ -106,6 +118,7 @@ async fn join_relay(relay_url: &str, code: &str) -> Result<RelaySocket> {
         &mut socket,
         ClientMessage::Join {
             code: code.to_string(),
+            access_token: relay_access_token(),
         },
     )
     .await?;
@@ -120,6 +133,13 @@ async fn join_relay(relay_url: &str, code: &str) -> Result<RelaySocket> {
         }
         _ => bail!("unexpected relay response"),
     }
+}
+
+fn relay_access_token() -> Option<String> {
+    std::env::var(ACCESS_TOKEN_ENV)
+        .ok()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
 }
 
 async fn run_noise_chat(

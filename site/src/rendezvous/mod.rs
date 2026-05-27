@@ -32,6 +32,11 @@ pub async fn rendezvous_ws(
 }
 
 async fn handle_socket(mut socket: WebSocket, state: RendezvousState, remote_ip: IpAddr) {
+    if !state.rendezvous_enabled() {
+        send_error(&mut socket, "rendezvous is unavailable").await;
+        return;
+    }
+
     if !state.allow_ws(remote_ip).await {
         send_error(&mut socket, "too many rendezvous connection attempts").await;
         return;
@@ -66,14 +71,25 @@ async fn handle_socket_inner(mut socket: WebSocket, state: RendezvousState, remo
     state.cleanup_expired().await;
 
     match client_message {
-        ClientMessage::Create { listen_port } => {
+        ClientMessage::Create {
+            listen_port,
+            access_token,
+        } => {
+            if !state.access_token_matches(access_token.as_deref()) {
+                send_error(&mut socket, "rendezvous access denied").await;
+                return;
+            }
             if !state.allow_create(remote_ip).await {
                 send_error(&mut socket, "too many invite creation attempts").await;
                 return;
             }
             handle_create(socket, state, remote_ip, listen_port).await;
         }
-        ClientMessage::Join { code } => {
+        ClientMessage::Join { code, access_token } => {
+            if !state.access_token_matches(access_token.as_deref()) {
+                send_error(&mut socket, "rendezvous access denied").await;
+                return;
+            }
             if !state.allow_join(remote_ip).await {
                 send_error(&mut socket, "too many invite join attempts").await;
                 return;
@@ -184,7 +200,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::app::app;
+    use crate::{
+        app::{app, app_with_config},
+        config::SiteConfig,
+    };
     use futures_util::{SinkExt, StreamExt};
     use serde_json::json;
     use std::net::SocketAddr;
@@ -230,6 +249,38 @@ mod tests {
         assert_eq!(caller_message["type"], "peer_joined");
         assert_eq!(joiner_message["type"], "candidate");
         assert_eq!(joiner_message["addr"], format!("127.0.0.1:{}", 7777));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_access_token_when_configured() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app_with_config(SiteConfig::for_tests(true, true, Some("expected-token")))
+                    .into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let url = format!("ws://{addr}/rv");
+        let (mut caller, _) = connect_async(&url).await.unwrap();
+        caller
+            .send(Message::Text(
+                json!({ "type": "create", "listen_port": 7777 })
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let response = read_test_message(&mut caller).await;
+
+        assert_eq!(response["type"], "error");
+        assert_eq!(response["message"], "rendezvous access denied");
 
         server.abort();
     }

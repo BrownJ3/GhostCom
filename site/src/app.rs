@@ -1,3 +1,4 @@
+use crate::config::SiteConfig;
 use crate::page::INDEX_HTML;
 use crate::relay::{RelayState, relay_ws};
 use crate::rendezvous::{RendezvousState, rendezvous_ws};
@@ -9,6 +10,10 @@ use axum::{
 };
 
 pub fn app() -> Router {
+    app_with_config(SiteConfig::from_env())
+}
+
+pub fn app_with_config(config: SiteConfig) -> Router {
     let public_routes = Router::new()
         .route("/", get(index))
         .route("/health", get(health))
@@ -16,11 +21,11 @@ pub fn app() -> Router {
 
     let rendezvous_routes = Router::new()
         .route("/rv", get(rendezvous_ws))
-        .with_state(RendezvousState::default());
+        .with_state(RendezvousState::new(config.clone()));
 
     let relay_routes = Router::new()
         .route("/relay", get(relay_ws))
-        .with_state(RelayState::default());
+        .with_state(RelayState::new(config));
 
     public_routes.merge(rendezvous_routes).merge(relay_routes)
 }

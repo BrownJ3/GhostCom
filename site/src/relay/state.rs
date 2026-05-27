@@ -8,24 +8,34 @@ use std::{
 };
 use tokio::sync::{Mutex, oneshot};
 
-use crate::rate_limit::{RateBucket, RateLimit, allow_event};
+use crate::{
+    config::SiteConfig,
+    rate_limit::{RateBucket, RateLimit, allow_event, allow_global_event},
+};
 
 const ROOM_TTL: Duration = Duration::from_secs(5 * 60);
-const MAX_ACTIVE_ROOMS: usize = 256;
-const MAX_ACTIVE_CONNECTIONS: usize = 1024;
-const MAX_ACTIVE_SESSIONS: usize = 256;
-const CONNECTION_RATE_LIMIT: RateLimit = RateLimit::new(60, Duration::from_secs(60));
-const CREATE_RATE_LIMIT: RateLimit = RateLimit::new(10, Duration::from_secs(5 * 60));
-const JOIN_RATE_LIMIT: RateLimit = RateLimit::new(60, Duration::from_secs(60));
+const MAX_ACTIVE_ROOMS: usize = 64;
+const MAX_ACTIVE_CONNECTIONS: usize = 128;
+const MAX_ACTIVE_SESSIONS: usize = 32;
+const CONNECTION_RATE_LIMIT: RateLimit = RateLimit::new(30, Duration::from_secs(60));
+const CREATE_RATE_LIMIT: RateLimit = RateLimit::new(6, Duration::from_secs(5 * 60));
+const JOIN_RATE_LIMIT: RateLimit = RateLimit::new(30, Duration::from_secs(60));
+const GLOBAL_CONNECTION_RATE_LIMIT: RateLimit = RateLimit::new(240, Duration::from_secs(60));
+const GLOBAL_CREATE_RATE_LIMIT: RateLimit = RateLimit::new(40, Duration::from_secs(5 * 60));
+const GLOBAL_JOIN_RATE_LIMIT: RateLimit = RateLimit::new(180, Duration::from_secs(60));
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RelayState {
+    config: SiteConfig,
     rooms: Arc<Mutex<HashMap<String, Room>>>,
     active_connections: Arc<Mutex<usize>>,
     active_sessions: Arc<Mutex<usize>>,
     connection_limits: Arc<Mutex<HashMap<IpAddr, RateBucket>>>,
     create_limits: Arc<Mutex<HashMap<IpAddr, RateBucket>>>,
     join_limits: Arc<Mutex<HashMap<IpAddr, RateBucket>>>,
+    global_connection_limit: Arc<Mutex<RateBucket>>,
+    global_create_limit: Arc<Mutex<RateBucket>>,
+    global_join_limit: Arc<Mutex<RateBucket>>,
 }
 
 pub struct Room {
@@ -40,6 +50,30 @@ impl Room {
 }
 
 impl RelayState {
+    pub fn new(config: SiteConfig) -> Self {
+        let now = Instant::now();
+        Self {
+            config,
+            rooms: Arc::default(),
+            active_connections: Arc::default(),
+            active_sessions: Arc::default(),
+            connection_limits: Arc::default(),
+            create_limits: Arc::default(),
+            join_limits: Arc::default(),
+            global_connection_limit: Arc::new(Mutex::new(RateBucket::new(now))),
+            global_create_limit: Arc::new(Mutex::new(RateBucket::new(now))),
+            global_join_limit: Arc::new(Mutex::new(RateBucket::new(now))),
+        }
+    }
+
+    pub fn relay_enabled(&self) -> bool {
+        self.config.relay_enabled
+    }
+
+    pub fn access_token_matches(&self, supplied: Option<&str>) -> bool {
+        self.config.token_matches(supplied)
+    }
+
     pub async fn cleanup_expired(&self) {
         let now = Instant::now();
         let mut rooms = self.rooms.lock().await;
@@ -77,15 +111,18 @@ impl RelayState {
     }
 
     pub async fn allow_connection(&self, ip: IpAddr) -> bool {
-        allow_event(&self.connection_limits, ip, CONNECTION_RATE_LIMIT).await
+        allow_global_event(&self.global_connection_limit, GLOBAL_CONNECTION_RATE_LIMIT).await
+            && allow_event(&self.connection_limits, ip, CONNECTION_RATE_LIMIT).await
     }
 
     pub async fn allow_create(&self, ip: IpAddr) -> bool {
-        allow_event(&self.create_limits, ip, CREATE_RATE_LIMIT).await
+        allow_global_event(&self.global_create_limit, GLOBAL_CREATE_RATE_LIMIT).await
+            && allow_event(&self.create_limits, ip, CREATE_RATE_LIMIT).await
     }
 
     pub async fn allow_join(&self, ip: IpAddr) -> bool {
-        allow_event(&self.join_limits, ip, JOIN_RATE_LIMIT).await
+        allow_global_event(&self.global_join_limit, GLOBAL_JOIN_RATE_LIMIT).await
+            && allow_event(&self.join_limits, ip, JOIN_RATE_LIMIT).await
     }
 
     pub async fn create_room(&self, join_tx: oneshot::Sender<WebSocket>) -> Option<String> {
@@ -139,7 +176,7 @@ mod tests {
 
     #[tokio::test]
     async fn connection_cap_releases_capacity() {
-        let state = RelayState::default();
+        let state = RelayState::new(SiteConfig::default());
 
         assert!(state.try_acquire_connection().await);
         state.release_connection().await;
@@ -149,7 +186,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_cap_releases_capacity() {
-        let state = RelayState::default();
+        let state = RelayState::new(SiteConfig::default());
 
         assert!(state.try_acquire_session().await);
         state.release_session().await;

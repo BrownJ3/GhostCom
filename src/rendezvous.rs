@@ -4,13 +4,20 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
+const ACCESS_TOKEN_ENV: &str = "GHSTCOM_RELAY_ACCESS_TOKEN";
 const MAX_WS_TEXT_BYTES: usize = 512;
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
-    Create { listen_port: u16 },
-    Join { code: String },
+    Create {
+        listen_port: u16,
+        access_token: Option<String>,
+    },
+    Join {
+        code: String,
+        access_token: Option<String>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -26,7 +33,14 @@ pub async fn create_invite(rendezvous_url: &str, listen_port: u16) -> Result<()>
     let (mut socket, _) = connect_async(rendezvous_url)
         .await
         .with_context(|| format!("failed to connect to rendezvous server at {rendezvous_url}"))?;
-    send_message(&mut socket, ClientMessage::Create { listen_port }).await?;
+    send_message(
+        &mut socket,
+        ClientMessage::Create {
+            listen_port,
+            access_token: relay_access_token(),
+        },
+    )
+    .await?;
 
     match read_message(&mut socket).await? {
         ServerMessage::Created { code } => {
@@ -66,6 +80,7 @@ pub async fn join_invite(rendezvous_url: &str, code: &str) -> Result<String> {
         &mut socket,
         ClientMessage::Join {
             code: code.to_string(),
+            access_token: relay_access_token(),
         },
     )
     .await?;
@@ -77,6 +92,13 @@ pub async fn join_invite(rendezvous_url: &str, code: &str) -> Result<String> {
         }
         _ => bail!("unexpected rendezvous response"),
     }
+}
+
+fn relay_access_token() -> Option<String> {
+    std::env::var(ACCESS_TOKEN_ENV)
+        .ok()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
 }
 
 async fn send_message<S>(socket: &mut S, message: ClientMessage) -> Result<()>

@@ -51,8 +51,12 @@ This checklist must be reviewed before any release that claims to be secure or p
 - Rendezvous does not receive session private keys.
 - Rendezvous does not replace end-to-end peer verification.
 - Public deployment has per-IP rate limits for WebSocket upgrades, invite creation, and invite joins.
+- Public deployment has global rate limits for WebSocket upgrades, invite creation, and invite joins.
 - Public deployment resolves the real client IP from trusted proxy headers before applying rate limits.
+- Public deployment ignores untrusted forwarding headers such as user-supplied `X-Forwarded-For`.
 - Public deployment has active room and connection caps.
+- Public deployment can require `GHSTCOM_RELAY_ACCESS_TOKEN` for private/cost-sensitive operation.
+- Public deployment can disable rendezvous quickly with `GHSTCOM_RENDEZVOUS_ENABLED=false`.
 - Public deployment has upstream network-level DDoS protection or a plan for abusive traffic beyond process-local limits.
 - Operational metrics exclude invite codes and chat data.
 
@@ -70,8 +74,12 @@ This checklist must be reviewed before any release that claims to be secure or p
 - Relay does not receive Noise private keys or session keys.
 - Relay falls back to manual end-to-end session verification for legacy room-only invites.
 - Public deployment has per-IP rate limits for WebSocket setup, invite creation, and invite joins.
+- Public deployment has global rate limits for WebSocket setup, invite creation, and invite joins.
 - Public deployment has active waiting-room, WebSocket connection, and paired-session caps.
 - Public deployment closes idle paired relay sessions.
+- Public deployment has a hard maximum paired-session lifetime.
+- Public deployment can require `GHSTCOM_RELAY_ACCESS_TOKEN` for private/cost-sensitive operation.
+- Public deployment can disable relay quickly with `GHSTCOM_RELAY_ENABLED=false`.
 
 ## Rust Safety
 

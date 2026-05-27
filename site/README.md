@@ -48,9 +48,33 @@ After launch:
 fly deploy
 ```
 
+For private or cost-sensitive deployments, set an access token as a Fly secret:
+
+```text
+fly secrets set GHSTCOM_RELAY_ACCESS_TOKEN="replace-with-a-long-random-value"
+```
+
+Clients that use this private relay/rendezvous service must set the same value
+before running `ghstprtcl`:
+
+```text
+export GHSTCOM_RELAY_ACCESS_TOKEN="replace-with-a-long-random-value"
+```
+
+Emergency switches can disable the costly WebSocket services while leaving the
+landing page and health check online:
+
+```text
+fly secrets set GHSTCOM_RELAY_ENABLED=false
+fly secrets set GHSTCOM_RENDEZVOUS_ENABLED=false
+```
+
 ## Notes
 
 - The service reads `PORT`, which Fly provides.
+- `GHSTCOM_RELAY_ACCESS_TOKEN` is optional. When set, `/relay` and `/rv` require matching client setup messages before creating or joining rooms.
+- `GHSTCOM_RELAY_ENABLED=false` disables `/relay`.
+- `GHSTCOM_RENDEZVOUS_ENABLED=false` disables `/rv`.
 - The page is embedded in the Rust binary.
 - Installer scripts are hosted in the GitHub repository, not on the Fly service.
 - `/install.sh`, `/install.ps1`, and other unknown paths return `404 Not Found`.
@@ -58,13 +82,19 @@ fly deploy
 - Invite codes expire after five minutes.
 - Invite codes are one-time use.
 - WebSocket setup messages are capped at 512 bytes.
-- Active rendezvous rooms are capped at 512.
-- Active rendezvous WebSocket connections are capped at 1024.
-- Per-IP WebSocket upgrade attempts are capped at 30 per minute.
-- Per-IP invite creation attempts are capped at 10 per five minutes.
-- Per-IP invite join attempts are capped at 60 per minute.
+- Active rendezvous rooms are capped at 64.
+- Active rendezvous WebSocket connections are capped at 128.
+- Per-IP WebSocket upgrade attempts are capped at 20 per minute.
+- Per-IP invite creation attempts are capped at 6 per five minutes.
+- Per-IP invite join attempts are capped at 30 per minute.
+- Global rendezvous setup attempts are capped in-process.
 - The server forwards direct connection candidates only; it does not relay chat messages.
 - The relay endpoint forwards opaque Noise-encrypted binary frames only.
+- Active relay waiting rooms are capped at 64.
+- Active relay WebSocket connections are capped at 128.
+- Active relay sessions are capped at 32.
+- Relayed bytes are capped at 8 MiB per direction per session.
+- Paired relay sessions have a 15 minute idle timeout and 60 minute hard lifetime.
 - No database or persistent storage is used.
 
 ## Client Rendezvous Usage
