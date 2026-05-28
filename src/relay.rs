@@ -10,7 +10,13 @@ use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use snow::{Builder, TransportState, params::NoiseParams};
-use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use subtle::ConstantTimeEq;
 use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
@@ -27,6 +33,7 @@ const INVITE_SECRET_BYTES: usize = 32;
 const INVITE_AUTH_PROOF_BYTES: usize = 32;
 const GROUP_PEER_ID_BYTES: usize = 2;
 const DEVICE_SECRET_BYTES: usize = 32;
+const DEVICE_APPROVAL_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -180,6 +187,25 @@ pub async fn join(mut code: String, relay_url: String) -> Result<()> {
     } else {
         run_noise_chat(socket, RelayRole::Joiner, invite.into_secret()).await
     }
+}
+
+pub async fn device() -> Result<()> {
+    let signing_key = load_or_create_device_key()?;
+    let public_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes());
+    let fingerprint = device_fingerprint(&public_key);
+    let expires_at = default_device_approval_expiry();
+
+    println!("Relay device");
+    println!("--------------------------------------------------");
+    println!("Fingerprint:");
+    println!("  {fingerprint}");
+    println!("Public key:");
+    println!("  {public_key}");
+    println!("Suggested 30-day allowlist entry:");
+    println!("  {public_key}@{expires_at}");
+    println!("--------------------------------------------------");
+    println!("Add the suggested entry to GHSTCOM_RELAY_ALLOWED_DEVICE_KEYS on the relay.");
+    Ok(())
 }
 
 async fn create_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySocket> {
@@ -360,6 +386,28 @@ fn device_auth(action: &str, code: Option<&str>) -> Result<Option<DeviceAuth>> {
         nonce,
         signature: URL_SAFE_NO_PAD.encode(signature.to_bytes()),
     }))
+}
+
+fn default_device_approval_expiry() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration + DEVICE_APPROVAL_TTL)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(DEVICE_APPROVAL_TTL.as_secs())
+}
+
+fn device_fingerprint(public_key: &str) -> String {
+    let digest = Sha256::digest(public_key.as_bytes());
+    digest[..8]
+        .chunks(2)
+        .map(|chunk| {
+            chunk
+                .iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 fn load_or_create_device_key() -> Result<SigningKey> {

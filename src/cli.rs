@@ -15,6 +15,7 @@ pub enum Command {
         code: String,
         relay: String,
     },
+    RelayDevice,
     Call {
         bind: SocketAddr,
         rendezvous: String,
@@ -96,6 +97,7 @@ pub fn parse() -> Result<Command> {
             };
             Ok(Command::RelayJoin { code, relay })
         }
+        "relay-device" => Ok(Command::RelayDevice),
         "call" => {
             let mut bind = "0.0.0.0:7777".parse()?;
             let mut rendezvous = None;
@@ -184,7 +186,7 @@ pub fn parse() -> Result<Command> {
 
 fn print_usage() {
     eprintln!(
-        "GhostCom\n\nUsage:\n  ghstprtcl\n  ghstprtcl relay-call [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-group [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-join <invite-code> [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl listen [--bind 0.0.0.0:7777]\n  ghstprtcl connect <host>:7777\n\nAdvanced direct rendezvous:\n  ghstprtcl call --rendezvous wss://your-private-site/rv [--bind 0.0.0.0:7777]\n  ghstprtcl join <invite-code> --rendezvous wss://your-private-site/rv"
+        "GhostCom\n\nUsage:\n  ghstprtcl\n  ghstprtcl relay-call [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-group [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-join [invite-code] [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-device\n  ghstprtcl listen [--bind 0.0.0.0:7777]\n  ghstprtcl connect <host>:7777\n\nAdvanced direct rendezvous:\n  ghstprtcl call --rendezvous wss://your-private-site/rv [--bind 0.0.0.0:7777]\n  ghstprtcl join <invite-code> --rendezvous wss://your-private-site/rv"
     );
 }
 
