@@ -103,6 +103,7 @@ The rendezvous server must:
 - Global active room limits.
 - Global active connection limits.
 - Optional server-side access token for private deployments.
+- Optional server-side device public-key allowlist for private relay deployments.
 - Emergency enable/disable switches for public WebSocket services.
 - Operational metrics that avoid sensitive values.
 
@@ -127,6 +128,7 @@ The rendezvous server can still observe IP addresses and timing. GhostCom must n
 Current relay abuse limits:
 
 - 64 active waiting relay rooms.
+- 8 active group participants per relay group.
 - 128 active relay WebSocket connections.
 - 32 active paired relay sessions.
 - 30 WebSocket setup attempts per IP per minute.
@@ -140,12 +142,38 @@ Current relay abuse limits:
 - 15 minute idle timeout for paired relay forwarding.
 - 60 minute maximum paired relay session lifetime.
 
+## High-Risk Operational Guidance
+
+For high-risk use, assume a compromised local machine or terminal can capture
+plaintext regardless of GhostCom's network encryption. Before relying on a
+session, users should:
+
+- Use a trusted machine and terminal profile with scrollback disabled or cleared.
+- Avoid shell wrappers, terminal recorders, and multiplexers that log output.
+- Prefer prompt-based joins (`ghstprtcl relay-join`) over command-line invite
+  arguments, because shells may store command history.
+- Close the group invite with `/close-invite` after expected participants arrive.
+- Use `/who` regularly in group sessions and deny unexpected pending joins.
+- Verify participant identity out-of-band before `/allow <id>`.
+- Close and restart the session if an invite may have been forwarded or exposed.
+- Prefer a private relay device-key allowlist for sensitive deployments.
+
 Private or cost-sensitive deployments should set `GHSTCOM_RELAY_ACCESS_TOKEN`
 as a deployment secret and distribute the same value to authorized clients
 through a separate trusted channel. The value must not be committed to the
 repository. Operators can set `GHSTCOM_RELAY_ENABLED=false` or
 `GHSTCOM_RENDEZVOUS_ENABLED=false` to disable the costly WebSocket services
 without changing the public landing page.
+
+For stronger private relay control, operators should prefer
+`GHSTCOM_RELAY_ALLOWED_DEVICE_KEYS` over a shared token. Relay clients generate
+a local Ed25519 device key and sign relay setup requests. The relay accepts the
+request only when the public key is allowlisted, the approval has not expired,
+and the signature matches the setup action. Allowlist entries should use
+`public_key@expires_at_unix` and should normally expire after 30 days or less.
+This does not create accounts or identify the human user; it only authorizes a
+device to use the relay. If a device is compromised, remove that public key from
+the allowlist and redeploy or restart the relay.
 
 ## Reporting Vulnerabilities
 
