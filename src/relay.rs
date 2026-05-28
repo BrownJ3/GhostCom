@@ -5,11 +5,14 @@ use crate::terminal::line_ui::{
 };
 use anyhow::{Result, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use futures_util::{SinkExt, StreamExt};
+use ed25519_dalek::{Signer, SigningKey};
+use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use snow::{Builder, TransportState, params::NoiseParams};
+use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 use subtle::ConstantTimeEq;
+use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 use zeroize::Zeroize;
 
@@ -22,26 +25,120 @@ const MAX_CHAT_MESSAGE_BYTES: usize = 8 * 1024;
 const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 const INVITE_SECRET_BYTES: usize = 32;
 const INVITE_AUTH_PROOF_BYTES: usize = 32;
+const GROUP_PEER_ID_BYTES: usize = 2;
+const DEVICE_SECRET_BYTES: usize = 32;
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
     Create {
         access_token: Option<String>,
+        device_auth: Option<DeviceAuth>,
+    },
+    GroupCreate {
+        access_token: Option<String>,
+        device_auth: Option<DeviceAuth>,
     },
     Join {
         code: String,
         access_token: Option<String>,
+        device_auth: Option<DeviceAuth>,
     },
+    GroupJoin {
+        code: String,
+        access_token: Option<String>,
+        device_auth: Option<DeviceAuth>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct DeviceAuth {
+    public_key: String,
+    nonce: String,
+    signature: String,
+}
+
+impl Drop for ClientMessage {
+    fn drop(&mut self) {
+        match self {
+            Self::Create {
+                access_token,
+                device_auth,
+            }
+            | Self::GroupCreate {
+                access_token,
+                device_auth,
+            } => {
+                if let Some(token) = access_token {
+                    token.zeroize();
+                }
+                if let Some(device_auth) = device_auth {
+                    device_auth.zeroize();
+                }
+            }
+            Self::Join {
+                code,
+                access_token,
+                device_auth,
+            }
+            | Self::GroupJoin {
+                code,
+                access_token,
+                device_auth,
+            } => {
+                code.zeroize();
+                if let Some(token) = access_token {
+                    token.zeroize();
+                }
+                if let Some(device_auth) = device_auth {
+                    device_auth.zeroize();
+                }
+            }
+        }
+    }
+}
+
+impl DeviceAuth {
+    fn zeroize(&mut self) {
+        self.public_key.zeroize();
+        self.nonce.zeroize();
+        self.signature.zeroize();
+    }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerMessage {
-    Created { code: String },
+    Created {
+        code: String,
+    },
+    GroupCreated {
+        code: String,
+    },
     Joined,
+    GroupJoined,
     PeerJoined,
-    Error { message: String },
+    GroupPeerJoined {
+        peer_id: u16,
+    },
+    GroupPeerLeft {
+        peer_id: u16,
+    },
+    DeviceApprovalRequired {
+        public_key: String,
+        fingerprint: String,
+        suggested_approval: String,
+        expires_at: u64,
+    },
+    Error {
+        message: String,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum HostControlMessage {
+    CloseGroupInvite,
 }
 
 #[derive(Clone, Copy)]
@@ -57,6 +154,13 @@ pub async fn call(relay_url: String) -> Result<()> {
     run_noise_chat(socket, RelayRole::Caller, Some(secret)).await
 }
 
+pub async fn group(relay_url: String) -> Result<()> {
+    chat_status("Creating secure group invite...")?;
+    let secret = InviteSecret::generate();
+    let socket = create_group_relay(&relay_url, &secret).await?;
+    run_group_host(socket, secret).await
+}
+
 pub async fn join(mut code: String, relay_url: String) -> Result<()> {
     chat_status("Joining secure invite...")?;
     let invite = match RelayInvite::parse(&code) {
@@ -67,8 +171,15 @@ pub async fn join(mut code: String, relay_url: String) -> Result<()> {
         }
     };
     code.zeroize();
-    let socket = join_relay(&relay_url, invite.room_code()).await?;
-    run_noise_chat(socket, RelayRole::Joiner, invite.into_secret()).await
+    let socket = join_relay(&relay_url, invite.room_code(), invite.is_group()).await?;
+    if invite.is_group() {
+        let Some(secret) = invite.into_secret() else {
+            bail!("group invite is missing its authentication secret");
+        };
+        run_group_joiner(socket, secret).await
+    } else {
+        run_noise_chat(socket, RelayRole::Joiner, invite.into_secret()).await
+    }
 }
 
 async fn create_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySocket> {
@@ -77,6 +188,7 @@ async fn create_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySoc
         &mut socket,
         ClientMessage::Create {
             access_token: relay_access_token(),
+            device_auth: device_auth("create", None)?,
         },
     )
     .await?;
@@ -84,14 +196,27 @@ async fn create_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySoc
     match read_setup(&mut socket).await? {
         ServerMessage::Created { code } => {
             validate_relay_code(&code)?;
-            print_invite_box(
-                "Share this invite code with your peer:",
-                &RelayInvite::format(&code, secret),
-            )?;
+            let mut invite = RelayInvite::format(&code, secret);
+            let invite_result = print_invite_box("Share this invite code with your peer:", &invite);
+            invite.zeroize();
+            invite_result?;
             chat_status("Waiting for peer to join...")?;
         }
         ServerMessage::Error { message } => {
             bail!("relay error: {}", sanitize_for_terminal(&message))
+        }
+        ServerMessage::DeviceApprovalRequired {
+            public_key,
+            fingerprint,
+            suggested_approval,
+            expires_at,
+        } => {
+            return device_approval_required(
+                public_key,
+                fingerprint,
+                suggested_approval,
+                expires_at,
+            );
         }
         _ => bail!("unexpected relay response"),
     }
@@ -105,32 +230,98 @@ async fn create_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySoc
             ServerMessage::Error { message } => {
                 bail!("relay error: {}", sanitize_for_terminal(&message))
             }
+            ServerMessage::DeviceApprovalRequired {
+                public_key,
+                fingerprint,
+                suggested_approval,
+                expires_at,
+            } => {
+                return device_approval_required(
+                    public_key,
+                    fingerprint,
+                    suggested_approval,
+                    expires_at,
+                );
+            }
             _ => {}
         }
     }
 }
 
-async fn join_relay(relay_url: &str, code: &str) -> Result<RelaySocket> {
-    validate_relay_code(code)?;
-
+async fn create_group_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySocket> {
     let (mut socket, _) = connect_async(relay_url).await?;
     send_setup(
         &mut socket,
-        ClientMessage::Join {
-            code: code.to_string(),
+        ClientMessage::GroupCreate {
             access_token: relay_access_token(),
+            device_auth: device_auth("group_create", None)?,
         },
     )
     .await?;
+
+    match read_setup(&mut socket).await? {
+        ServerMessage::GroupCreated { code } => {
+            validate_relay_code(&code)?;
+            let mut invite = RelayInvite::format_group(&code, secret);
+            let invite_result = print_invite_box(
+                "Share this group invite code with trusted participants:",
+                &invite,
+            );
+            invite.zeroize();
+            invite_result?;
+            chat_status("Group room is open. Participants can join until you close it.")?;
+            Ok(socket)
+        }
+        ServerMessage::Error { message } => {
+            bail!("relay error: {}", sanitize_for_terminal(&message))
+        }
+        ServerMessage::DeviceApprovalRequired {
+            public_key,
+            fingerprint,
+            suggested_approval,
+            expires_at,
+        } => device_approval_required(public_key, fingerprint, suggested_approval, expires_at),
+        _ => bail!("unexpected relay response"),
+    }
+}
+
+async fn join_relay(relay_url: &str, code: &str, group: bool) -> Result<RelaySocket> {
+    validate_relay_code(code)?;
+
+    let (mut socket, _) = connect_async(relay_url).await?;
+    let setup = if group {
+        ClientMessage::GroupJoin {
+            code: code.to_string(),
+            access_token: relay_access_token(),
+            device_auth: device_auth("group_join", Some(code))?,
+        }
+    } else {
+        ClientMessage::Join {
+            code: code.to_string(),
+            access_token: relay_access_token(),
+            device_auth: device_auth("join", Some(code))?,
+        }
+    };
+    send_setup(&mut socket, setup).await?;
 
     match read_setup(&mut socket).await? {
         ServerMessage::Joined => {
             chat_status("Joined relay. Establishing end-to-end encryption...")?;
             Ok(socket)
         }
+        ServerMessage::GroupJoined => {
+            chat_status("Joined group relay. Establishing end-to-end encryption...")?;
+            Ok(socket)
+        }
         ServerMessage::Error { message } => {
             bail!("relay error: {}", sanitize_for_terminal(&message))
         }
+        ServerMessage::DeviceApprovalRequired {
+            public_key,
+            fingerprint,
+            suggested_approval,
+            expires_at,
+        } => device_approval_required(public_key, fingerprint, suggested_approval, expires_at),
         _ => bail!("unexpected relay response"),
     }
 }
@@ -140,6 +331,107 @@ fn relay_access_token() -> Option<String> {
         .ok()
         .map(|token| token.trim().to_string())
         .filter(|token| !token.is_empty())
+}
+
+fn device_approval_required(
+    public_key: String,
+    fingerprint: String,
+    suggested_approval: String,
+    expires_at: u64,
+) -> Result<RelaySocket> {
+    bail!(
+        "relay device approval required\nfingerprint: {}\npublic key: {}\nsuggested allowlist entry, expires at Unix time {}:\n{}\nask the relay operator to add the suggested entry to GHSTCOM_RELAY_ALLOWED_DEVICE_KEYS",
+        sanitize_for_terminal(&fingerprint),
+        sanitize_for_terminal(&public_key),
+        expires_at,
+        sanitize_for_terminal(&suggested_approval)
+    )
+}
+
+fn device_auth(action: &str, code: Option<&str>) -> Result<Option<DeviceAuth>> {
+    let signing_key = load_or_create_device_key()?;
+    let public_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes());
+    let nonce = URL_SAFE_NO_PAD.encode(rand::random::<[u8; 16]>());
+    let payload = device_auth_payload(action, code, &nonce);
+    let signature = signing_key.sign(payload.as_bytes());
+
+    Ok(Some(DeviceAuth {
+        public_key,
+        nonce,
+        signature: URL_SAFE_NO_PAD.encode(signature.to_bytes()),
+    }))
+}
+
+fn load_or_create_device_key() -> Result<SigningKey> {
+    let path = device_key_path()?;
+    if let Ok(encoded) = fs::read_to_string(&path) {
+        let mut decoded = URL_SAFE_NO_PAD.decode(encoded.trim())?;
+        if decoded.len() != DEVICE_SECRET_BYTES {
+            decoded.zeroize();
+            bail!("device key has invalid length: {}", path.display());
+        }
+        let mut secret = [0_u8; DEVICE_SECRET_BYTES];
+        secret.copy_from_slice(&decoded);
+        decoded.zeroize();
+        let signing_key = SigningKey::from_bytes(&secret);
+        secret.zeroize();
+        return Ok(signing_key);
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut secret = rand::random::<[u8; DEVICE_SECRET_BYTES]>();
+    let encoded = URL_SAFE_NO_PAD.encode(secret);
+    write_device_key(&path, &encoded)?;
+    let signing_key = SigningKey::from_bytes(&secret);
+    secret.zeroize();
+    Ok(signing_key)
+}
+
+fn write_device_key(path: &PathBuf, encoded: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(encoded.as_bytes())?;
+        file.write_all(b"\n")?;
+        return Ok(());
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::write(path, format!("{encoded}\n"))?;
+        Ok(())
+    }
+}
+
+fn device_key_path() -> Result<PathBuf> {
+    if let Ok(path) = std::env::var("GHSTCOM_DEVICE_KEY_PATH") {
+        let path = path.trim();
+        if !path.is_empty() {
+            return Ok(PathBuf::from(path));
+        }
+    }
+
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| anyhow::anyhow!("HOME or USERPROFILE is required for device key storage"))?;
+    Ok(PathBuf::from(home).join(".ghostcom").join("device.key"))
+}
+
+fn device_auth_payload(action: &str, code: Option<&str>, nonce: &str) -> String {
+    format!(
+        "GhostCom relay device auth v1\n{action}\n{}\n{nonce}",
+        code.unwrap_or("")
+    )
 }
 
 async fn run_noise_chat(
@@ -169,6 +461,7 @@ async fn run_noise_chat(
             RelayFrame::Close => bail!("peer closed before sending display name"),
             RelayFrame::InviteProof(_) => bail!("unexpected invite proof"),
             RelayFrame::Chat(_) => {}
+            RelayFrame::GroupChat { .. } => {}
             RelayFrame::TypingStart | RelayFrame::TypingStop => {}
         }
     };
@@ -252,6 +545,7 @@ async fn verify_invite_secret(
         RelayFrame::Close => bail!("peer closed before invite authentication"),
         RelayFrame::Hello(_)
         | RelayFrame::Chat(_)
+        | RelayFrame::GroupChat { .. }
         | RelayFrame::TypingStart
         | RelayFrame::TypingStop => {
             bail!("peer sent chat data before invite authentication");
@@ -313,6 +607,20 @@ async fn run_chat_loop(
                 match frame? {
                     RelayFrame::Hello(_) => {}
                     RelayFrame::InviteProof(_) => bail!("unexpected invite proof"),
+                    RelayFrame::GroupChat {
+                        sender_id,
+                        sender,
+                        mut message,
+                    } => {
+                        typing_indicator.stop()?;
+                        chat_println(&format!(
+                            "{}> {}",
+                            format_group_sender(sender_id, &sender),
+                            sanitize_for_terminal(&message)
+                        ))?;
+                        message.zeroize();
+                        chat_prompt()?;
+                    }
                     RelayFrame::Chat(mut message) => {
                         typing_indicator.stop()?;
                         chat_println(&format!("{peer_name}> {}", sanitize_for_terminal(&message)))?;
@@ -341,10 +649,433 @@ async fn run_chat_loop(
     Ok(())
 }
 
+struct GroupOutboundPeer {
+    name: String,
+    tx: mpsc::Sender<RelayFrame>,
+}
+
+impl Drop for GroupOutboundPeer {
+    fn drop(&mut self) {
+        self.name.zeroize();
+    }
+}
+
+enum GroupHostEvent {
+    Ready {
+        peer_id: u16,
+        name: String,
+        tx: mpsc::Sender<RelayFrame>,
+    },
+    Chat {
+        peer_id: u16,
+        sender: String,
+        message: String,
+    },
+    Closed {
+        peer_id: u16,
+    },
+}
+
+async fn run_group_host(socket: RelaySocket, secret: InviteSecret) -> Result<()> {
+    let local_name = prompt_display_name("GroupHost")?;
+    let (writer, mut reader) = socket.split();
+    let writer = Arc::new(Mutex::new(writer));
+    let (events_tx, mut events_rx) = mpsc::channel(64);
+    let mut peer_inputs: HashMap<u16, mpsc::Sender<Vec<u8>>> = HashMap::new();
+    let mut pending_peers: HashMap<u16, GroupOutboundPeer> = HashMap::new();
+    let mut peers: HashMap<u16, GroupOutboundPeer> = HashMap::new();
+    let mut input_events = ChatInputReader::spawn();
+
+    chat_println("")?;
+    chat_println("--------------------------------------------------")?;
+    chat_success("Group room ready. Type /quit to close.")?;
+    chat_println("--------------------------------------------------")?;
+    chat_prompt()?;
+
+    loop {
+        tokio::select! {
+            input = input_events.recv() => {
+                let Some(input) = input else {
+                    break;
+                };
+                match input {
+                    ChatInput::Line(mut line) => {
+                        if line.trim() == "/quit" {
+                            line.zeroize();
+                            break;
+                        }
+                        if line.trim() == "/who" {
+                            print_group_roster(&pending_peers, &peers)?;
+                            chat_prompt()?;
+                            line.zeroize();
+                            continue;
+                        }
+                        if line.trim() == "/close-invite" {
+                            send_host_control(writer.clone(), HostControlMessage::CloseGroupInvite).await?;
+                            chat_println("Group invite closed. Current participants stay connected.")?;
+                            chat_prompt()?;
+                            line.zeroize();
+                            continue;
+                        }
+                        if let Some(peer_id) = parse_group_command(line.trim(), "/allow") {
+                            if let Some(peer) = pending_peers.remove(&peer_id) {
+                                chat_println(&format!(
+                                    "{} admitted to the group.",
+                                    format_group_sender(peer_id, &peer.name)
+                                ))?;
+                                peers.insert(peer_id, peer);
+                                chat_prompt()?;
+                            } else {
+                                chat_println("No pending participant with that id.")?;
+                                chat_prompt()?;
+                            }
+                            line.zeroize();
+                            continue;
+                        }
+                        if let Some(peer_id) = parse_group_command(line.trim(), "/deny") {
+                            if let Some(peer) = pending_peers.remove(&peer_id) {
+                                let _ = peer.tx.send(RelayFrame::Close).await;
+                                peer_inputs.remove(&peer_id);
+                                chat_println(&format!(
+                                    "{} denied.",
+                                    format_group_sender(peer_id, &peer.name)
+                                ))?;
+                                chat_prompt()?;
+                            } else {
+                                chat_println("No pending participant with that id.")?;
+                                chat_prompt()?;
+                            }
+                            line.zeroize();
+                            continue;
+                        }
+                        for peer in peers.values() {
+                            let _ = peer.tx.send(RelayFrame::GroupChat {
+                                sender_id: 0,
+                                sender: local_name.clone(),
+                                message: line.clone(),
+                            }).await;
+                        }
+                        line.zeroize();
+                    }
+                    ChatInput::Closed => break,
+                    ChatInput::TypingStart | ChatInput::TypingStop => {}
+                }
+            }
+            message = reader.next() => {
+                let Some(message) = message else {
+                    break;
+                };
+                match message? {
+                    Message::Text(text) if text.len() <= MAX_RELAY_SETUP_BYTES => {
+                        match serde_json::from_str::<ServerMessage>(&text)? {
+                            ServerMessage::GroupPeerJoined { peer_id } => {
+                                let (raw_tx, raw_rx) = mpsc::channel(64);
+                                peer_inputs.insert(peer_id, raw_tx);
+                                tokio::spawn(run_group_host_peer(
+                                    peer_id,
+                                    raw_rx,
+                                    writer.clone(),
+                                    events_tx.clone(),
+                                    secret.clone(),
+                                    local_name.clone(),
+                                ));
+                            }
+                            ServerMessage::GroupPeerLeft { peer_id } => {
+                                peer_inputs.remove(&peer_id);
+                                if let Some(peer) = pending_peers.remove(&peer_id) {
+                                    chat_println(&format!(
+                                        "{} left before admission.",
+                                        format_group_sender(peer_id, &peer.name)
+                                    ))?;
+                                    chat_prompt()?;
+                                } else if let Some(peer) = peers.remove(&peer_id) {
+                                    chat_println(&format!(
+                                        "{} left the group.",
+                                        format_group_sender(peer_id, &peer.name)
+                                    ))?;
+                                    chat_prompt()?;
+                                }
+                            }
+                            ServerMessage::Error { message } => {
+                                bail!("relay error: {}", sanitize_for_terminal(&message));
+                            }
+                            _ => {}
+                        }
+                    }
+                    Message::Binary(bytes) if bytes.len() > GROUP_PEER_ID_BYTES => {
+                        let peer_id = u16::from_be_bytes([bytes[0], bytes[1]]);
+                        if let Some(tx) = peer_inputs.get(&peer_id) {
+                            let _ = tx.send(bytes[GROUP_PEER_ID_BYTES..].to_vec()).await;
+                        }
+                    }
+                    Message::Close(_) => break,
+                    _ => {}
+                }
+            }
+            event = events_rx.recv() => {
+                let Some(event) = event else {
+                    break;
+                };
+                match event {
+                    GroupHostEvent::Ready { peer_id, name, tx } => {
+                        chat_println(&format!(
+                            "{} wants to join. Type /allow {} to admit or /deny {} to reject.",
+                            format_group_sender(peer_id, &name),
+                            peer_id,
+                            peer_id
+                        ))?;
+                        pending_peers.insert(peer_id, GroupOutboundPeer { name, tx });
+                        chat_prompt()?;
+                    }
+                    GroupHostEvent::Chat { peer_id, mut sender, mut message } => {
+                        if !peers.contains_key(&peer_id) {
+                            sender.zeroize();
+                            message.zeroize();
+                            continue;
+                        }
+                        chat_println(&format!(
+                            "{}> {}",
+                            format_group_sender(peer_id, &sender),
+                            sanitize_for_terminal(&message)
+                        ))?;
+                        for (other_id, peer) in peers.iter() {
+                            if *other_id != peer_id {
+                                let _ = peer.tx.send(RelayFrame::GroupChat {
+                                    sender_id: peer_id,
+                                    sender: sender.clone(),
+                                    message: message.clone(),
+                                }).await;
+                            }
+                        }
+                        sender.zeroize();
+                        message.zeroize();
+                        chat_prompt()?;
+                    }
+                    GroupHostEvent::Closed { peer_id } => {
+                        peer_inputs.remove(&peer_id);
+                        if let Some(peer) = pending_peers.remove(&peer_id) {
+                            chat_println(&format!(
+                                "{} left before admission.",
+                                format_group_sender(peer_id, &peer.name)
+                            ))?;
+                            chat_prompt()?;
+                        } else if let Some(peer) = peers.remove(&peer_id) {
+                            chat_println(&format!(
+                                "{} left the group.",
+                                format_group_sender(peer_id, &peer.name)
+                            ))?;
+                            chat_prompt()?;
+                        }
+                    }
+                }
+            }
+            _ = tokio::signal::ctrl_c() => break,
+        }
+    }
+
+    for peer in peers.values() {
+        let _ = peer.tx.send(RelayFrame::Close).await;
+    }
+    for peer in pending_peers.values() {
+        let _ = peer.tx.send(RelayFrame::Close).await;
+    }
+
+    Ok(())
+}
+
+async fn run_group_host_peer(
+    peer_id: u16,
+    mut raw_rx: mpsc::Receiver<Vec<u8>>,
+    writer: Arc<Mutex<SplitSink<RelaySocket, Message>>>,
+    events_tx: mpsc::Sender<GroupHostEvent>,
+    secret: InviteSecret,
+    local_name: String,
+) -> Result<()> {
+    let (mut transport, mut handshake_hash) =
+        group_host_handshake(peer_id, &mut raw_rx, writer.clone()).await?;
+    verify_group_invite(
+        peer_id,
+        &mut raw_rx,
+        writer.clone(),
+        &mut transport,
+        &secret,
+        &handshake_hash,
+    )
+    .await?;
+    handshake_hash.zeroize();
+
+    send_group_encrypted_to_peer(
+        peer_id,
+        writer.clone(),
+        &mut transport,
+        RelayFrame::Hello(local_name),
+    )
+    .await?;
+    let peer_name = loop {
+        match read_group_peer_frame(&mut raw_rx, &mut transport).await? {
+            RelayFrame::Hello(name) => break name,
+            RelayFrame::Close => bail!("peer closed before sending display name"),
+            RelayFrame::InviteProof(_) => bail!("unexpected invite proof"),
+            RelayFrame::Chat(_)
+            | RelayFrame::GroupChat { .. }
+            | RelayFrame::TypingStart
+            | RelayFrame::TypingStop => {}
+        }
+    };
+
+    let (out_tx, mut out_rx) = mpsc::channel(64);
+    let _ = events_tx
+        .send(GroupHostEvent::Ready {
+            peer_id,
+            name: peer_name.clone(),
+            tx: out_tx,
+        })
+        .await;
+
+    loop {
+        tokio::select! {
+            outbound = out_rx.recv() => {
+                let Some(frame) = outbound else {
+                    break;
+                };
+                send_group_encrypted_to_peer(peer_id, writer.clone(), &mut transport, frame).await?;
+            }
+            inbound = read_group_peer_frame(&mut raw_rx, &mut transport) => {
+                match inbound? {
+                    RelayFrame::Chat(message) | RelayFrame::GroupChat { message, .. } => {
+                        let _ = events_tx.send(GroupHostEvent::Chat {
+                            peer_id,
+                            sender: peer_name.clone(),
+                            message,
+                        }).await;
+                    }
+                    RelayFrame::Close => break,
+                    RelayFrame::Hello(_) | RelayFrame::InviteProof(_) | RelayFrame::TypingStart | RelayFrame::TypingStop => {}
+                }
+            }
+        }
+    }
+
+    let _ = events_tx.send(GroupHostEvent::Closed { peer_id }).await;
+    Ok(())
+}
+
+async fn run_group_joiner(mut socket: RelaySocket, secret: InviteSecret) -> Result<()> {
+    let (mut transport, mut handshake_hash, _) =
+        noise_handshake(&mut socket, RelayRole::Joiner).await?;
+    verify_invite_secret(
+        &mut socket,
+        &mut transport,
+        RelayRole::Joiner,
+        &secret,
+        &handshake_hash,
+    )
+    .await?;
+    handshake_hash.zeroize();
+    chat_success("Group invite verified end-to-end.")?;
+
+    let local_name = prompt_display_name("GroupPeer")?;
+    send_encrypted(&mut socket, &mut transport, RelayFrame::Hello(local_name)).await?;
+
+    let host_name = loop {
+        match read_encrypted(&mut socket, &mut transport).await? {
+            RelayFrame::Hello(name) => break name,
+            RelayFrame::Close => bail!("host closed before sending display name"),
+            RelayFrame::InviteProof(_) => bail!("unexpected invite proof"),
+            RelayFrame::Chat(_)
+            | RelayFrame::GroupChat { .. }
+            | RelayFrame::TypingStart
+            | RelayFrame::TypingStop => {}
+        }
+    };
+
+    run_group_joiner_loop(socket, transport, host_name).await
+}
+
+async fn run_group_joiner_loop(
+    mut socket: RelaySocket,
+    mut transport: TransportState,
+    host_name: String,
+) -> Result<()> {
+    let mut input_events = ChatInputReader::spawn();
+
+    chat_println("")?;
+    chat_println("--------------------------------------------------")?;
+    chat_success(&format!(
+        "Connected to group host {host_name}. Type /quit to close."
+    ))?;
+    chat_println("--------------------------------------------------")?;
+    chat_prompt()?;
+
+    loop {
+        tokio::select! {
+            input = input_events.recv() => {
+                let Some(input) = input else {
+                    let _ = send_encrypted(&mut socket, &mut transport, RelayFrame::Close).await;
+                    break;
+                };
+                match input {
+                    ChatInput::Line(mut line) => {
+                        if line.trim() == "/quit" {
+                            line.zeroize();
+                            let _ = send_encrypted(&mut socket, &mut transport, RelayFrame::Close).await;
+                            break;
+                        }
+                        send_encrypted(&mut socket, &mut transport, RelayFrame::Chat(line)).await?;
+                    }
+                    ChatInput::Closed => {
+                        let _ = send_encrypted(&mut socket, &mut transport, RelayFrame::Close).await;
+                        break;
+                    }
+                    ChatInput::TypingStart | ChatInput::TypingStop => {}
+                }
+            }
+            frame = read_encrypted(&mut socket, &mut transport) => {
+                match frame? {
+                    RelayFrame::GroupChat {
+                        sender_id,
+                        sender,
+                        mut message,
+                    } => {
+                        chat_println(&format!(
+                            "{}> {}",
+                            format_group_sender(sender_id, &sender),
+                            sanitize_for_terminal(&message)
+                        ))?;
+                        message.zeroize();
+                        chat_prompt()?;
+                    }
+                    RelayFrame::Chat(mut message) => {
+                        chat_println(&format!("{host_name}> {}", sanitize_for_terminal(&message)))?;
+                        message.zeroize();
+                        chat_prompt()?;
+                    }
+                    RelayFrame::Close => {
+                        chat_println("Group host closed the session.")?;
+                        break;
+                    }
+                    RelayFrame::Hello(_) | RelayFrame::InviteProof(_) | RelayFrame::TypingStart | RelayFrame::TypingStop => {}
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                let _ = send_encrypted(&mut socket, &mut transport, RelayFrame::Close).await;
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 enum RelayFrame {
     InviteProof([u8; INVITE_AUTH_PROOF_BYTES]),
     Hello(String),
     Chat(String),
+    GroupChat {
+        sender_id: u16,
+        sender: String,
+        message: String,
+    },
     TypingStart,
     TypingStop,
     Close,
@@ -373,6 +1104,33 @@ impl RelayFrame {
                 }
                 let mut out = vec![2];
                 out.extend_from_slice(message.as_bytes());
+                message.zeroize();
+                Ok(out)
+            }
+            Self::GroupChat {
+                sender_id,
+                mut sender,
+                mut message,
+            } => {
+                validate_display_name(&sender)?;
+                if message.len() > MAX_CHAT_MESSAGE_BYTES {
+                    sender.zeroize();
+                    message.zeroize();
+                    bail!("message too large");
+                }
+                let sender_bytes = sender.as_bytes();
+                if sender_bytes.len() > u8::MAX as usize {
+                    sender.zeroize();
+                    message.zeroize();
+                    bail!("sender name too large");
+                }
+                let mut out = Vec::with_capacity(4 + sender_bytes.len() + message.len());
+                out.push(7);
+                out.extend_from_slice(&sender_id.to_be_bytes());
+                out.push(sender_bytes.len() as u8);
+                out.extend_from_slice(sender_bytes);
+                out.extend_from_slice(message.as_bytes());
+                sender.zeroize();
                 message.zeroize();
                 Ok(out)
             }
@@ -411,6 +1169,34 @@ impl RelayFrame {
                 payload.zeroize();
                 Ok(Self::Chat(message?))
             }
+            7 => {
+                if payload.len() < 3 {
+                    bail!("invalid group chat frame");
+                }
+                let sender_id = u16::from_be_bytes([payload[0], payload[1]]);
+                let sender_len = payload[2] as usize;
+                let payload = &payload[3..];
+                if payload.len() < sender_len {
+                    bail!("invalid group chat frame");
+                };
+                let (sender, message) = payload.split_at(sender_len);
+                if message.len() > MAX_CHAT_MESSAGE_BYTES {
+                    bail!("message too large");
+                }
+                let mut sender = sender.to_vec();
+                let mut message = message.to_vec();
+                let sender_text = String::from_utf8(sender.clone());
+                let message_text = String::from_utf8(message.clone());
+                sender.zeroize();
+                message.zeroize();
+                let sender_text = sender_text?;
+                validate_display_name(&sender_text)?;
+                Ok(Self::GroupChat {
+                    sender_id,
+                    sender: sender_text,
+                    message: message_text?,
+                })
+            }
             4 if payload.is_empty() => Ok(Self::TypingStart),
             5 if payload.is_empty() => Ok(Self::TypingStop),
             3 if payload.is_empty() => Ok(Self::Close),
@@ -424,11 +1210,8 @@ async fn send_encrypted(
     transport: &mut TransportState,
     frame: RelayFrame,
 ) -> Result<()> {
-    let mut plaintext = frame.encode()?;
-    let mut encrypted = vec![0_u8; plaintext.len() + 16];
-    let len = transport.write_message(&plaintext, &mut encrypted)?;
-    let result = send_binary(socket, &encrypted[..len]).await;
-    plaintext.zeroize();
+    let mut encrypted = encrypt_frame(transport, frame)?;
+    let result = send_binary(socket, &encrypted).await;
     encrypted.zeroize();
     result
 }
@@ -438,20 +1221,175 @@ async fn read_encrypted(
     transport: &mut TransportState,
 ) -> Result<RelayFrame> {
     let mut encrypted = read_binary(socket).await?;
-    let mut plaintext = vec![0_u8; encrypted.len()];
-    let len = transport.read_message(&encrypted, &mut plaintext)?;
+    let frame = decrypt_frame(transport, &encrypted);
     encrypted.zeroize();
+    frame
+}
+
+fn encrypt_frame(transport: &mut TransportState, frame: RelayFrame) -> Result<Vec<u8>> {
+    let mut plaintext = frame.encode()?;
+    let mut encrypted = vec![0_u8; plaintext.len() + 16];
+    let len = transport.write_message(&plaintext, &mut encrypted)?;
+    plaintext.zeroize();
+    encrypted.truncate(len);
+    Ok(encrypted)
+}
+
+fn decrypt_frame(transport: &mut TransportState, encrypted: &[u8]) -> Result<RelayFrame> {
+    let mut plaintext = vec![0_u8; encrypted.len()];
+    let len = transport.read_message(encrypted, &mut plaintext)?;
     let frame = RelayFrame::decode(&plaintext[..len]);
     plaintext.zeroize();
     frame
 }
 
-async fn send_setup(socket: &mut RelaySocket, message: ClientMessage) -> Result<()> {
-    let text = serde_json::to_string(&message)?;
+async fn group_host_handshake(
+    peer_id: u16,
+    raw_rx: &mut mpsc::Receiver<Vec<u8>>,
+    writer: Arc<Mutex<SplitSink<RelaySocket, Message>>>,
+) -> Result<(TransportState, Vec<u8>)> {
+    let params: NoiseParams = NOISE_PATTERN.parse()?;
+    let builder = Builder::new(params);
+    let mut static_key = builder.generate_keypair()?.private;
+    let mut noise = builder.local_private_key(&static_key)?.build_responder()?;
+    static_key.zeroize();
+
+    let mut buf = vec![0_u8; MAX_NOISE_MESSAGE_BYTES];
+    let mut msg = read_group_peer_binary(raw_rx).await?;
+    noise.read_message(&msg, &mut buf)?;
+    msg.zeroize();
+    let len = noise.write_message(&[], &mut buf)?;
+    send_group_binary_to_peer(peer_id, writer.clone(), &buf[..len]).await?;
+    buf[..len].zeroize();
+    let mut msg = read_group_peer_binary(raw_rx).await?;
+    noise.read_message(&msg, &mut buf)?;
+    msg.zeroize();
+
+    let handshake_hash = noise.get_handshake_hash().to_vec();
+    buf.zeroize();
+    Ok((noise.into_transport_mode()?, handshake_hash))
+}
+
+async fn verify_group_invite(
+    peer_id: u16,
+    raw_rx: &mut mpsc::Receiver<Vec<u8>>,
+    writer: Arc<Mutex<SplitSink<RelaySocket, Message>>>,
+    transport: &mut TransportState,
+    secret: &InviteSecret,
+    handshake_hash: &[u8],
+) -> Result<()> {
+    let mut local_proof =
+        invite_auth_proof(secret, handshake_hash, RelayRole::Caller.local_auth_label());
+    send_group_encrypted_to_peer(
+        peer_id,
+        writer.clone(),
+        transport,
+        RelayFrame::InviteProof(local_proof),
+    )
+    .await?;
+    local_proof.zeroize();
+
+    let mut expected_peer_proof =
+        invite_auth_proof(secret, handshake_hash, RelayRole::Caller.peer_auth_label());
+    match read_group_peer_frame(raw_rx, transport).await? {
+        RelayFrame::InviteProof(mut peer_proof) => {
+            if peer_proof.ct_eq(&expected_peer_proof).into() {
+                peer_proof.zeroize();
+                expected_peer_proof.zeroize();
+                return Ok(());
+            }
+            peer_proof.zeroize();
+            expected_peer_proof.zeroize();
+            bail!("group invite authentication failed");
+        }
+        RelayFrame::Close => bail!("peer closed before invite authentication"),
+        RelayFrame::Hello(_)
+        | RelayFrame::Chat(_)
+        | RelayFrame::GroupChat { .. }
+        | RelayFrame::TypingStart
+        | RelayFrame::TypingStop => {
+            bail!("peer sent chat data before invite authentication");
+        }
+    }
+}
+
+async fn read_group_peer_binary(raw_rx: &mut mpsc::Receiver<Vec<u8>>) -> Result<Vec<u8>> {
+    match raw_rx.recv().await {
+        Some(bytes) if bytes.len() <= MAX_NOISE_MESSAGE_BYTES => Ok(bytes),
+        Some(_) => bail!("noise message too large"),
+        None => bail!("relay closed"),
+    }
+}
+
+async fn read_group_peer_frame(
+    raw_rx: &mut mpsc::Receiver<Vec<u8>>,
+    transport: &mut TransportState,
+) -> Result<RelayFrame> {
+    let mut encrypted = read_group_peer_binary(raw_rx).await?;
+    let frame = decrypt_frame(transport, &encrypted);
+    encrypted.zeroize();
+    frame
+}
+
+async fn send_group_encrypted_to_peer(
+    peer_id: u16,
+    writer: Arc<Mutex<SplitSink<RelaySocket, Message>>>,
+    transport: &mut TransportState,
+    frame: RelayFrame,
+) -> Result<()> {
+    let mut encrypted = encrypt_frame(transport, frame)?;
+    let result = send_group_binary_to_peer(peer_id, writer, &encrypted).await;
+    encrypted.zeroize();
+    result
+}
+
+async fn send_group_binary_to_peer(
+    peer_id: u16,
+    writer: Arc<Mutex<SplitSink<RelaySocket, Message>>>,
+    bytes: &[u8],
+) -> Result<()> {
+    if bytes.len() > MAX_NOISE_MESSAGE_BYTES {
+        bail!("noise message too large");
+    }
+    let mut envelope = Vec::with_capacity(GROUP_PEER_ID_BYTES + bytes.len());
+    envelope.extend_from_slice(&peer_id.to_be_bytes());
+    envelope.extend_from_slice(bytes);
+    writer
+        .lock()
+        .await
+        .send(Message::Binary(envelope.into()))
+        .await?;
+    Ok(())
+}
+
+async fn send_host_control(
+    writer: Arc<Mutex<SplitSink<RelaySocket, Message>>>,
+    message: HostControlMessage,
+) -> Result<()> {
+    let mut text = serde_json::to_string(&message)?;
     if text.len() > MAX_RELAY_SETUP_BYTES {
+        text.zeroize();
+        bail!("relay control message too large");
+    }
+    let result = writer
+        .lock()
+        .await
+        .send(Message::Text(text.clone().into()))
+        .await;
+    text.zeroize();
+    result?;
+    Ok(())
+}
+
+async fn send_setup(socket: &mut RelaySocket, message: ClientMessage) -> Result<()> {
+    let mut text = serde_json::to_string(&message)?;
+    if text.len() > MAX_RELAY_SETUP_BYTES {
+        text.zeroize();
         bail!("relay setup message too large");
     }
-    socket.send(Message::Text(text.into())).await?;
+    let result = socket.send(Message::Text(text.clone().into())).await;
+    text.zeroize();
+    result?;
     Ok(())
 }
 
@@ -459,7 +1397,10 @@ async fn read_setup(socket: &mut RelaySocket) -> Result<ServerMessage> {
     while let Some(message) = socket.next().await {
         match message? {
             Message::Text(text) if text.len() <= MAX_RELAY_SETUP_BYTES => {
-                return Ok(serde_json::from_str(&text)?);
+                let mut text = text.to_string();
+                let result = serde_json::from_str(&text);
+                text.zeroize();
+                return Ok(result?);
             }
             Message::Text(_) => bail!("relay setup message too large"),
             Message::Close(_) => bail!("relay closed"),
@@ -511,6 +1452,49 @@ fn default_relay_name(verification_code: &str) -> &str {
     } else {
         "Peer"
     }
+}
+
+fn format_group_sender(sender_id: u16, sender: &str) -> String {
+    if sender_id == 0 {
+        sanitize_for_terminal(sender)
+    } else {
+        format!("{}#{}", sanitize_for_terminal(sender), sender_id)
+    }
+}
+
+fn parse_group_command(line: &str, command: &str) -> Option<u16> {
+    let id = line.strip_prefix(command)?.trim();
+    if id.is_empty() || id.contains(char::is_whitespace) {
+        return None;
+    }
+    id.parse().ok()
+}
+
+fn print_group_roster(
+    pending_peers: &HashMap<u16, GroupOutboundPeer>,
+    peers: &HashMap<u16, GroupOutboundPeer>,
+) -> Result<()> {
+    chat_println("Participants")?;
+    chat_println("--------------------------------------------------")?;
+    chat_println("0  GroupHost  admitted")?;
+
+    for (peer_id, peer) in peers {
+        chat_println(&format!(
+            "{}  {}  admitted",
+            peer_id,
+            sanitize_for_terminal(&peer.name)
+        ))?;
+    }
+
+    for (peer_id, peer) in pending_peers {
+        chat_println(&format!(
+            "{}  {}  pending",
+            peer_id,
+            sanitize_for_terminal(&peer.name)
+        ))?;
+    }
+
+    Ok(())
 }
 
 fn validate_relay_code(code: &str) -> Result<()> {
@@ -570,11 +1554,22 @@ impl Drop for InviteSecret {
 struct RelayInvite {
     room_code: String,
     secret: Option<InviteSecret>,
+    group: bool,
+}
+
+impl Drop for RelayInvite {
+    fn drop(&mut self) {
+        self.room_code.zeroize();
+    }
 }
 
 impl RelayInvite {
     fn parse(raw: &str) -> Result<Self> {
         let trimmed = raw.trim();
+        let (group, trimmed) = match trimmed.strip_prefix("g:") {
+            Some(rest) => (true, rest),
+            None => (false, trimmed),
+        };
         let (room_code, secret) = match trimmed.split_once('.') {
             Some((room_code, secret)) => (room_code, Some(InviteSecret::parse(secret)?)),
             None => (trimmed, None),
@@ -584,6 +1579,7 @@ impl RelayInvite {
         Ok(Self {
             room_code: room_code.to_string(),
             secret,
+            group,
         })
     }
 
@@ -591,12 +1587,20 @@ impl RelayInvite {
         format!("{room_code}.{}", secret.encode())
     }
 
+    fn format_group(room_code: &str, secret: &InviteSecret) -> String {
+        format!("g:{room_code}.{}", secret.encode())
+    }
+
     fn room_code(&self) -> &str {
         &self.room_code
     }
 
-    fn into_secret(self) -> Option<InviteSecret> {
-        self.secret
+    fn is_group(&self) -> bool {
+        self.group
+    }
+
+    fn into_secret(mut self) -> Option<InviteSecret> {
+        self.secret.take()
     }
 }
 
@@ -635,6 +1639,26 @@ mod tests {
 
         assert_eq!(parsed.room_code(), "abcd1234efgh5678");
         assert!(parsed.secret.is_none());
+    }
+
+    #[test]
+    fn relay_invite_marks_group_codes() {
+        let secret = InviteSecret([7; INVITE_SECRET_BYTES]);
+        let invite = RelayInvite::format_group("abcd1234efgh5678", &secret);
+        let parsed = RelayInvite::parse(&invite).unwrap();
+
+        assert!(parsed.is_group());
+        assert_eq!(parsed.room_code(), "abcd1234efgh5678");
+        assert!(parsed.secret.is_some());
+    }
+
+    #[test]
+    fn parses_group_admission_commands() {
+        assert_eq!(parse_group_command("/allow 12", "/allow"), Some(12));
+        assert_eq!(parse_group_command("/deny 7", "/deny"), Some(7));
+        assert_eq!(parse_group_command("/allow", "/allow"), None);
+        assert_eq!(parse_group_command("/allow 1 2", "/allow"), None);
+        assert_eq!(parse_group_command("/who", "/allow"), None);
     }
 
     #[test]

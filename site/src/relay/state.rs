@@ -6,7 +6,8 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
+use zeroize::Zeroize;
 
 use crate::{
     config::SiteConfig,
@@ -28,6 +29,7 @@ const GLOBAL_JOIN_RATE_LIMIT: RateLimit = RateLimit::new(180, Duration::from_sec
 pub struct RelayState {
     config: SiteConfig,
     rooms: Arc<Mutex<HashMap<String, Room>>>,
+    group_rooms: Arc<Mutex<HashMap<String, GroupRoom>>>,
     active_connections: Arc<Mutex<usize>>,
     active_sessions: Arc<Mutex<usize>>,
     connection_limits: Arc<Mutex<HashMap<IpAddr, RateBucket>>>,
@@ -43,7 +45,24 @@ pub struct Room {
     expires_at: Instant,
 }
 
+pub struct GroupRoom {
+    pub join_tx: mpsc::Sender<GroupJoin>,
+    next_peer_id: u16,
+    expires_at: Instant,
+}
+
+pub struct GroupJoin {
+    pub peer_id: u16,
+    pub socket: WebSocket,
+}
+
 impl Room {
+    pub fn is_expired(&self) -> bool {
+        Instant::now() > self.expires_at
+    }
+}
+
+impl GroupRoom {
     pub fn is_expired(&self) -> bool {
         Instant::now() > self.expires_at
     }
@@ -55,6 +74,7 @@ impl RelayState {
         Self {
             config,
             rooms: Arc::default(),
+            group_rooms: Arc::default(),
             active_connections: Arc::default(),
             active_sessions: Arc::default(),
             connection_limits: Arc::default(),
@@ -74,10 +94,38 @@ impl RelayState {
         self.config.token_matches(supplied)
     }
 
+    pub fn requires_device_key(&self) -> bool {
+        self.config.requires_device_key()
+    }
+
+    pub fn device_key_allowed(&self, public_key: &str) -> bool {
+        self.config.device_key_allowed(public_key)
+    }
+
     pub async fn cleanup_expired(&self) {
         let now = Instant::now();
         let mut rooms = self.rooms.lock().await;
-        rooms.retain(|_, room| room.expires_at > now);
+        let mut expired_codes: Vec<String> = rooms
+            .iter()
+            .filter(|(_, room)| room.expires_at <= now)
+            .map(|(code, _)| code.clone())
+            .collect();
+        for code in &mut expired_codes {
+            remove_room_entry(&mut rooms, &code);
+            code.zeroize();
+        }
+        drop(rooms);
+
+        let mut group_rooms = self.group_rooms.lock().await;
+        let mut expired_codes: Vec<String> = group_rooms
+            .iter()
+            .filter(|(_, room)| room.expires_at <= now)
+            .map(|(code, _)| code.clone())
+            .collect();
+        for code in &mut expired_codes {
+            remove_group_room_entry(&mut group_rooms, &code);
+            code.zeroize();
+        }
     }
 
     pub async fn try_acquire_connection(&self) -> bool {
@@ -132,7 +180,7 @@ impl RelayState {
         }
 
         loop {
-            let code = generate_code();
+            let mut code = generate_code();
             if !rooms.contains_key(&code) {
                 rooms.insert(
                     code.clone(),
@@ -143,18 +191,83 @@ impl RelayState {
                 );
                 return Some(code);
             }
+            code.zeroize();
+        }
+    }
+
+    pub async fn create_group_room(&self, join_tx: mpsc::Sender<GroupJoin>) -> Option<String> {
+        let mut group_rooms = self.group_rooms.lock().await;
+        if group_rooms.len() >= MAX_ACTIVE_ROOMS {
+            return None;
+        }
+
+        loop {
+            let mut code = generate_code();
+            if !group_rooms.contains_key(&code) {
+                group_rooms.insert(
+                    code.clone(),
+                    GroupRoom {
+                        join_tx,
+                        next_peer_id: 1,
+                        expires_at: Instant::now() + ROOM_TTL,
+                    },
+                );
+                return Some(code);
+            }
+            code.zeroize();
         }
     }
 
     pub async fn take_room(&self, code: &str) -> Option<Room> {
         let mut rooms = self.rooms.lock().await;
-        rooms.remove(code)
+        remove_room_entry(&mut rooms, code)
+    }
+
+    pub async fn join_group_room(&self, code: &str, socket: WebSocket) -> Result<u16, WebSocket> {
+        let mut group_rooms = self.group_rooms.lock().await;
+        let Some(room) = group_rooms.get_mut(code) else {
+            return Err(socket);
+        };
+
+        if room.is_expired() || room.join_tx.is_closed() {
+            remove_group_room_entry(&mut group_rooms, code);
+            return Err(socket);
+        }
+        let peer_id = room.next_peer_id;
+        room.next_peer_id = room.next_peer_id.saturating_add(1);
+
+        match room.join_tx.try_send(GroupJoin { peer_id, socket }) {
+            Ok(()) => Ok(peer_id),
+            Err(error) => Err(error.into_inner().socket),
+        }
     }
 
     pub async fn remove_room(&self, code: &str) {
         let mut rooms = self.rooms.lock().await;
-        rooms.remove(code);
+        remove_room_entry(&mut rooms, code);
     }
+
+    pub async fn remove_group_room(&self, code: &str) {
+        let mut group_rooms = self.group_rooms.lock().await;
+        remove_group_room_entry(&mut group_rooms, code);
+    }
+}
+
+fn remove_room_entry(rooms: &mut HashMap<String, Room>, code: &str) -> Option<Room> {
+    rooms.remove_entry(code).map(|(mut code, room)| {
+        code.zeroize();
+        room
+    })
+}
+
+fn remove_group_room_entry(
+    group_rooms: &mut HashMap<String, GroupRoom>,
+    code: &str,
+) -> Option<GroupRoom> {
+    group_rooms.remove_entry(code).map(|(mut code, room)| {
+        code.zeroize();
+        room
+    })
 }
 
 fn generate_code() -> String {

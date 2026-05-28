@@ -8,6 +8,9 @@ pub enum Command {
     RelayCall {
         relay: String,
     },
+    RelayGroup {
+        relay: String,
+    },
     RelayJoin {
         code: String,
         relay: String,
@@ -50,11 +53,7 @@ pub fn parse() -> Result<Command> {
             }
             Ok(Command::RelayCall { relay })
         }
-        "relay-join" => {
-            let Some(code) = args.next() else {
-                print_usage();
-                bail!("missing relay invite code");
-            };
+        "relay-group" => {
             let mut relay = DEFAULT_RELAY_URL.to_string();
             while let Some(arg) = args.next() {
                 match arg.as_str() {
@@ -64,9 +63,37 @@ pub fn parse() -> Result<Command> {
                         };
                         relay = value;
                     }
+                    other => bail!("unknown relay-group option: {other}"),
+                }
+            }
+            Ok(Command::RelayGroup { relay })
+        }
+        "relay-join" => {
+            let mut code = None;
+            let mut relay = DEFAULT_RELAY_URL.to_string();
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--relay" => {
+                        let Some(value) = args.next() else {
+                            bail!("--relay requires a WebSocket URL");
+                        };
+                        relay = value;
+                    }
+                    other if code.is_none() => code = Some(other.to_string()),
                     other => bail!("unknown relay-join option: {other}"),
                 }
             }
+            let code = match code {
+                Some(code) => code,
+                None => {
+                    let code = prompt("Paste relay invite code: ")?;
+                    let code = code.trim().to_string();
+                    if code.is_empty() {
+                        bail!("relay invite code is required");
+                    }
+                    code
+                }
+            };
             Ok(Command::RelayJoin { code, relay })
         }
         "call" => {
@@ -157,7 +184,7 @@ pub fn parse() -> Result<Command> {
 
 fn print_usage() {
     eprintln!(
-        "GhostCom\n\nUsage:\n  ghstprtcl\n  ghstprtcl relay-call [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-join <invite-code> [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl listen [--bind 0.0.0.0:7777]\n  ghstprtcl connect <host>:7777\n\nAdvanced direct rendezvous:\n  ghstprtcl call --rendezvous wss://your-private-site/rv [--bind 0.0.0.0:7777]\n  ghstprtcl join <invite-code> --rendezvous wss://your-private-site/rv"
+        "GhostCom\n\nUsage:\n  ghstprtcl\n  ghstprtcl relay-call [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-group [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-join <invite-code> [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl listen [--bind 0.0.0.0:7777]\n  ghstprtcl connect <host>:7777\n\nAdvanced direct rendezvous:\n  ghstprtcl call --rendezvous wss://your-private-site/rv [--bind 0.0.0.0:7777]\n  ghstprtcl join <invite-code> --rendezvous wss://your-private-site/rv"
     );
 }
 
@@ -168,14 +195,18 @@ fn interactive_menu() -> Result<Command> {
     println!("==================================================");
     println!();
     println!("  1  Start secure chat");
-    println!("  2  Join secure chat");
+    println!("  2  Start secure group chat");
+    println!("  3  Join secure chat");
     println!();
 
     match prompt("Choose [1]: ")?.trim() {
         "" | "1" => Ok(Command::RelayCall {
             relay: DEFAULT_RELAY_URL.to_string(),
         }),
-        "2" => {
+        "2" => Ok(Command::RelayGroup {
+            relay: DEFAULT_RELAY_URL.to_string(),
+        }),
+        "3" => {
             let code = prompt("Paste invite code: ")?;
             let code = code.trim().to_string();
             if code.is_empty() {

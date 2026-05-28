@@ -36,6 +36,7 @@ GhostCom does not claim to defeat:
 
 - A compromised local machine.
 - A malicious or compromised peer.
+- A malicious or compromised group host.
 - Screen recording, screenshots, or copied terminal text.
 - Operating system swap, hibernation, or crash dumps.
 - Traffic analysis of IP addresses, timing, and packet sizes.
@@ -47,6 +48,8 @@ GhostCom does not claim to defeat:
 Users must verify the shared session code out-of-band before relying on confidentiality against active network attackers.
 
 The rendezvous server is untrusted. It can observe connection metadata and can attempt to interfere with setup, but it must not be able to read messages or silently complete a MITM attack when users verify the shared session code.
+
+Group relay rooms use a host-mediated trust model. Each participant has an independent encrypted session with the group host, and the host re-encrypts participant messages to the rest of the room. The relay remains untrusted and should not receive plaintext, but the group host is trusted with message contents as an active participant.
 
 The selected cryptographic libraries are trusted to implement their protocols correctly. GhostCom should minimize its own cryptographic decision-making.
 
@@ -75,5 +78,6 @@ The rendezvous service may observe:
 - Invite creation time.
 - Invite join time.
 - Whether an invite was joined.
+- Group room join and traffic timing metadata.
 
 The rendezvous service must not intentionally persist this information in durable application storage.

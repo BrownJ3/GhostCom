@@ -10,6 +10,7 @@ GhostCom is designed as an ephemeral secure communication tool, not a general me
 
 - Work quickly from a terminal on macOS, Windows, and Linux.
 - Support simple 1-to-1 encrypted terminal chat.
+- Support invite-only encrypted group chat through a trusted group host.
 - Work across typical home networks through an untrusted relay.
 - Keep direct peer-to-peer TCP mode available for LANs, VPNs, and reachable hosts.
 - Encrypt all traffic between peers.
@@ -22,7 +23,6 @@ GhostCom is designed as an ephemeral secure communication tool, not a general me
 - No accounts.
 - No cloud sync.
 - No offline messages.
-- No group chat in the first release.
 - No file transfer in the first release.
 - No persistent identity by default.
 - No custom cryptographic protocol.
@@ -71,6 +71,41 @@ Share the invite code with the other person, then they run:
 ```text
 ghstprtcl relay-join <invite-code>
 ```
+
+For higher-risk use, run `ghstprtcl relay-join` without the invite on the
+command line and paste the code at the prompt. That avoids writing the invite
+into shell history.
+
+Start an invite-only group chat:
+
+```text
+ghstprtcl relay-group
+```
+
+Share the group invite code with trusted participants. They join with the same join command:
+
+```text
+ghstprtcl relay-join <group-invite-code>
+```
+
+Group chat uses a conservative host-mediated design. Each participant establishes an independent end-to-end Noise session with the group host, and the host re-encrypts messages to the rest of the group. The relay still forwards only opaque encrypted frames, but the group host is a trusted participant and necessarily sees group messages. Group invites expire after 5 minutes, and the host must approve each participant with `/allow <id>` before they receive group traffic.
+
+Group hosts can type `/who` to list admitted and pending participants, or `/close-invite` to stop new joins while keeping the current group connected.
+
+If the group host leaves or closes the terminal session, the group chat ends for
+all participants.
+
+Private relays can require approved device keys instead of a shared relay password. Each client automatically creates a local Ed25519 device key at `~/.ghostcom/device.key` the first time it uses relay mode. If a private relay is configured with `GHSTCOM_RELAY_ALLOWED_DEVICE_KEYS`, unapproved clients receive a device fingerprint and suggested allowlist entry to send to the relay operator. The operator adds approved entries to `GHSTCOM_RELAY_ALLOWED_DEVICE_KEYS` and redeploys/restarts the relay.
+
+Example relay allowlist:
+
+```text
+GHSTCOM_RELAY_ALLOWED_DEVICE_KEYS=publicKeyOne@1790640000,publicKeyTwo@1790640000
+```
+
+The number after `@` is the approval expiration time as a Unix timestamp. The relay suggests a 30-day approval entry when a new device asks for access. Bare public keys without `@expires_at` are accepted for compatibility but should be avoided for high-risk deployments.
+
+The older `GHSTCOM_RELAY_ACCESS_TOKEN` still works as an optional deployment-wide gate, but expiring device approvals are the better fit for revoking one compromised device without rotating everyone.
 
 Relay invite codes include a client-generated secret that is never sent to the relay. After the Noise handshake, both clients prove knowledge of that secret inside the encrypted channel and then start the chat. This makes entering the invite code the normal consent step.
 
@@ -126,6 +161,7 @@ cargo run -- relay-join <invite-code>
 ```text
 ghstprtcl
 ghstprtcl relay-call --relay wss://ghostcom-site.fly.dev/relay
+ghstprtcl relay-group --relay wss://ghostcom-site.fly.dev/relay
 ghstprtcl relay-join <invite-code> --relay wss://ghostcom-site.fly.dev/relay
 ghstprtcl listen --bind 0.0.0.0:7777
 ghstprtcl connect <host>:7777
@@ -166,6 +202,7 @@ This repository has an initial encrypted 1-to-1 terminal chat MVP:
 - Ephemeral display names, chosen or generated per session.
 - End-to-end encrypted transient typing indicators are implemented but disabled by default until capability negotiation is added.
 - Optional WebSocket relay using end-to-end Noise encryption.
+- Invite-only relay group chat using per-participant Noise sessions through a trusted host.
 - Advanced opt-in WebSocket rendezvous for private direct-connection experiments.
 - Bounded message frames.
 - No application logs, config file, contact book, or message persistence.
