@@ -1422,7 +1422,7 @@ async fn send_host_control(
     let result = writer
         .lock()
         .await
-        .send(Message::Text(text.clone().into()))
+        .send(Message::Text(std::mem::take(&mut text).into()))
         .await;
     text.zeroize();
     result?;
@@ -1435,7 +1435,9 @@ async fn send_setup(socket: &mut RelaySocket, message: ClientMessage) -> Result<
         text.zeroize();
         bail!("relay setup message too large");
     }
-    let result = socket.send(Message::Text(text.clone().into())).await;
+    // Move `text` into the message rather than cloning, so the original memory
+    // is owned by the sink and not duplicated in a clone that outlives zeroize.
+    let result = socket.send(Message::Text(std::mem::take(&mut text).into())).await;
     text.zeroize();
     result?;
     Ok(())
