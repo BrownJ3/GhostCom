@@ -1531,12 +1531,8 @@ fn format_verification_code(handshake_hash: &[u8]) -> String {
         .join("-")
 }
 
-fn default_relay_name(verification_code: &str) -> &str {
-    if verification_code.as_bytes()[0].is_ascii_hexdigit() {
-        "RelayPeer"
-    } else {
-        "Peer"
-    }
+fn default_relay_name(_verification_code: &str) -> &str {
+    "RelayPeer"
 }
 
 fn format_group_sender(sender_id: u16, sender: &str) -> String {
