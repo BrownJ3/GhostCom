@@ -153,7 +153,39 @@ async fn handle_socket_inner(mut socket: WebSocket, state: RelayState, remote_ip
             handle_group_join(socket, state, remote_ip, code).await;
             code.zeroize();
         }
+        ClientMessage::RegisterDevice {
+            registration_token,
+            device_auth,
+        } => {
+            handle_register_device(socket, state, registration_token.as_str(), device_auth).await;
+            registration_token.zeroize();
+        }
     }
+}
+
+async fn handle_register_device(
+    mut socket: WebSocket,
+    state: RelayState,
+    registration_token: &str,
+    device_auth: &DeviceAuth,
+) {
+    if !state.registration_enabled() {
+        send_error(&mut socket, "device self-registration is not enabled on this relay").await;
+        return;
+    }
+
+    if !state.registration_token_matches(Some(registration_token)) {
+        send_error(&mut socket, "invalid registration token").await;
+        return;
+    }
+
+    if !verify_device_signature(&device_auth, "register", None) {
+        send_error(&mut socket, "invalid device signature").await;
+        return;
+    }
+
+    state.approve_device(device_auth.public_key.clone()).await;
+    let _ = send_server_message(&mut socket, ServerMessage::DeviceRegistered).await;
 }
 
 fn scrub_access_token(access_token: &mut Option<String>) {
@@ -182,7 +214,20 @@ async fn relay_access_allowed(
         return false;
     };
 
-    verify_device_auth(state, device_auth, action, code)
+    verify_device_auth_runtime(state, device_auth, action, code).await
+}
+
+async fn verify_device_auth_runtime(
+    state: &RelayState,
+    device_auth: &DeviceAuth,
+    action: &str,
+    code: Option<&str>,
+) -> bool {
+    if !state.device_key_allowed_runtime(&device_auth.public_key).await {
+        return false;
+    }
+
+    verify_device_signature(device_auth, action, code)
 }
 
 fn verify_device_auth(
@@ -194,7 +239,10 @@ fn verify_device_auth(
     if !state.device_key_allowed(&device_auth.public_key) {
         return false;
     }
+    verify_device_signature(device_auth, action, code)
+}
 
+fn verify_device_signature(device_auth: &DeviceAuth, action: &str, code: Option<&str>) -> bool {
     let Ok(public_key_bytes) = URL_SAFE_NO_PAD.decode(&device_auth.public_key) else {
         return false;
     };
@@ -599,7 +647,7 @@ async fn send_server_message(
     message: ServerMessage,
 ) -> anyhow::Result<()> {
     let mut text = serde_json::to_string(&message)?;
-    let result = socket.send(Message::Text(text.clone().into())).await;
+    let result = socket.send(Message::Text(std::mem::take(&mut text).into())).await;
     text.zeroize();
     result?;
     Ok(())
@@ -731,5 +779,104 @@ mod tests {
             Message::Text(text) => serde_json::from_str(&text).unwrap(),
             other => panic!("unexpected message: {other:?}"),
         }
+    }
+
+    async fn spawn_relay_with_registration(
+        allowed_device_keys: &[&str],
+        registration_token: &str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let allowed_device_keys: Vec<String> =
+            allowed_device_keys.iter().map(|k| k.to_string()).collect();
+        let registration_token = registration_token.to_string();
+        let server = tokio::spawn(async move {
+            let keys: Vec<&str> = allowed_device_keys.iter().map(String::as_str).collect();
+            axum::serve(
+                listener,
+                app_with_config(SiteConfig::for_tests_with_registration(
+                    true,
+                    None,
+                    &keys,
+                    &registration_token,
+                ))
+                .into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        (format!("ws://{addr}/relay"), server)
+    }
+
+    #[tokio::test]
+    async fn device_self_registration_allows_subsequent_connect() {
+        let new_device = SigningKey::from_bytes(&[13; DEVICE_PUBLIC_KEY_BYTES]);
+        let reg_token = "test-registration-secret";
+
+        // Start relay with no pre-approved devices but registration enabled
+        let (url, server) = spawn_relay_with_registration(&[], reg_token).await;
+
+        // Step 1: register the device
+        let (mut reg_socket, _) = connect_async(&url).await.unwrap();
+        reg_socket
+            .send(Message::Text(
+                json!({
+                    "type": "register_device",
+                    "registration_token": reg_token,
+                    "device_auth": test_device_auth(&new_device, "register", None)
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        let reg_response = read_test_message(&mut reg_socket).await;
+        assert_eq!(reg_response["type"], "device_registered");
+
+        // Step 2: use the relay with the now-registered device
+        let (mut socket, _) = connect_async(&url).await.unwrap();
+        socket
+            .send(Message::Text(
+                json!({
+                    "type": "create",
+                    "access_token": null,
+                    "device_auth": test_device_auth(&new_device, "create", None)
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        let response = read_test_message(&mut socket).await;
+        assert_eq!(response["type"], "created");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn device_registration_rejects_wrong_token() {
+        let device = SigningKey::from_bytes(&[14; DEVICE_PUBLIC_KEY_BYTES]);
+        let (url, server) = spawn_relay_with_registration(&[], "correct-token").await;
+
+        let (mut socket, _) = connect_async(&url).await.unwrap();
+        socket
+            .send(Message::Text(
+                json!({
+                    "type": "register_device",
+                    "registration_token": "wrong-token",
+                    "device_auth": test_device_auth(&device, "register", None)
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        let response = read_test_message(&mut socket).await;
+        assert_eq!(response["type"], "error");
+
+        server.abort();
     }
 }

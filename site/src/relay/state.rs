@@ -1,7 +1,7 @@
 use axum::extract::ws::WebSocket;
 use rand::{Rng, distributions::Alphanumeric, rngs::OsRng};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::IpAddr,
     sync::Arc,
     time::{Duration, Instant},
@@ -38,6 +38,7 @@ pub struct RelayState {
     global_connection_limit: Arc<Mutex<RateBucket>>,
     global_create_limit: Arc<Mutex<RateBucket>>,
     global_join_limit: Arc<Mutex<RateBucket>>,
+    runtime_approved_devices: Arc<Mutex<HashSet<String>>>,
 }
 
 pub struct Room {
@@ -83,6 +84,7 @@ impl RelayState {
             global_connection_limit: Arc::new(Mutex::new(RateBucket::new(now))),
             global_create_limit: Arc::new(Mutex::new(RateBucket::new(now))),
             global_join_limit: Arc::new(Mutex::new(RateBucket::new(now))),
+            runtime_approved_devices: Arc::default(),
         }
     }
 
@@ -100,6 +102,25 @@ impl RelayState {
 
     pub fn device_key_allowed(&self, public_key: &str) -> bool {
         self.config.device_key_allowed(public_key)
+    }
+
+    pub async fn device_key_allowed_runtime(&self, public_key: &str) -> bool {
+        if self.config.device_key_allowed(public_key) {
+            return true;
+        }
+        self.runtime_approved_devices.lock().await.contains(public_key)
+    }
+
+    pub async fn approve_device(&self, public_key: String) {
+        self.runtime_approved_devices.lock().await.insert(public_key);
+    }
+
+    pub fn registration_token_matches(&self, supplied: Option<&str>) -> bool {
+        self.config.registration_token_matches(supplied)
+    }
+
+    pub fn registration_enabled(&self) -> bool {
+        self.config.registration_enabled()
     }
 
     pub async fn cleanup_expired(&self) {
