@@ -31,6 +31,10 @@ impl RateBucket {
     }
 }
 
+/// Maximum number of distinct IPs tracked per rate-limit bucket map.
+/// Prevents unbounded memory growth under IP-cycling attacks.
+const MAX_IP_BUCKETS: usize = 10_000;
+
 pub async fn allow_event(
     buckets: &Mutex<HashMap<IpAddr, RateBucket>>,
     ip: IpAddr,
@@ -39,6 +43,12 @@ pub async fn allow_event(
     let now = Instant::now();
     let mut buckets = buckets.lock().await;
     buckets.retain(|_, bucket| now.duration_since(bucket.window_started_at) <= limit.window * 2);
+
+    // If the map is at capacity and this is an unknown IP, reject without inserting.
+    if !buckets.contains_key(&ip) && buckets.len() >= MAX_IP_BUCKETS {
+        return false;
+    }
+
     let bucket = buckets.entry(ip).or_insert(RateBucket {
         window_started_at: now,
         events: 0,
