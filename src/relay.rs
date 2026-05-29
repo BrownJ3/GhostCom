@@ -365,7 +365,9 @@ async fn run_chat_loop(
                             break;
                         }
 
-                        send_encrypted(&mut socket, &mut transport, RelayFrame::Chat(line)).await?;
+                        let result = send_encrypted(&mut socket, &mut transport, RelayFrame::Chat(std::mem::take(&mut line))).await;
+                        line.zeroize();
+                        result?;
                     }
                     ChatInput::TypingStart => {
                         if typing_enabled {
@@ -802,7 +804,9 @@ async fn run_group_joiner_loop(
                             let _ = send_encrypted(&mut socket, &mut transport, RelayFrame::Close).await;
                             break;
                         }
-                        send_encrypted(&mut socket, &mut transport, RelayFrame::Chat(line)).await?;
+                        let result = send_encrypted(&mut socket, &mut transport, RelayFrame::Chat(std::mem::take(&mut line))).await;
+                        line.zeroize();
+                        result?;
                     }
                     ChatInput::Closed => {
                         let _ = send_encrypted(&mut socket, &mut transport, RelayFrame::Close).await;
@@ -862,23 +866,27 @@ enum RelayFrame {
     Close,
 }
 
+
 impl RelayFrame {
-    fn encode(self) -> Result<Vec<u8>> {
-        match self {
-            Self::InviteProof(mut proof) => {
+    fn encode(mut self) -> Result<Vec<u8>> {
+        // Match on &mut self so we borrow fields rather than move them
+        // (moving out of a type with Drop is forbidden by E0509).
+        // Drop still runs after this method returns, giving a second zeroize pass.
+        match &mut self {
+            Self::InviteProof(proof) => {
                 let mut out = vec![6];
-                out.extend_from_slice(&proof);
+                out.extend_from_slice(proof.as_ref());
                 proof.zeroize();
                 Ok(out)
             }
-            Self::Hello(mut name) => {
-                validate_display_name(&name)?;
+            Self::Hello(name) => {
+                validate_display_name(name)?;
                 let mut out = vec![1];
                 out.extend_from_slice(name.as_bytes());
                 name.zeroize();
                 Ok(out)
             }
-            Self::Chat(mut message) => {
+            Self::Chat(message) => {
                 if message.len() > MAX_CHAT_MESSAGE_BYTES {
                     message.zeroize();
                     bail!("message too large");
@@ -888,28 +896,24 @@ impl RelayFrame {
                 message.zeroize();
                 Ok(out)
             }
-            Self::GroupChat {
-                sender_id,
-                mut sender,
-                mut message,
-            } => {
-                validate_display_name(&sender)?;
+            Self::GroupChat { sender_id, sender, message } => {
+                validate_display_name(sender)?;
                 if message.len() > MAX_CHAT_MESSAGE_BYTES {
                     sender.zeroize();
                     message.zeroize();
                     bail!("message too large");
                 }
-                let sender_bytes = sender.as_bytes();
-                if sender_bytes.len() > u8::MAX as usize {
+                if sender.len() > u8::MAX as usize {
                     sender.zeroize();
                     message.zeroize();
                     bail!("sender name too large");
                 }
-                let mut out = Vec::with_capacity(4 + sender_bytes.len() + message.len());
+                let sender_len = sender.len();
+                let mut out = Vec::with_capacity(4 + sender_len + message.len());
                 out.push(7);
                 out.extend_from_slice(&sender_id.to_be_bytes());
-                out.push(sender_bytes.len() as u8);
-                out.extend_from_slice(sender_bytes);
+                out.push(sender_len as u8);
+                out.extend_from_slice(sender.as_bytes());
                 out.extend_from_slice(message.as_bytes());
                 sender.zeroize();
                 message.zeroize();
@@ -935,7 +939,7 @@ impl RelayFrame {
             }
             1 => {
                 let mut payload = payload.to_vec();
-                let name = String::from_utf8(payload.clone());
+                let name = String::from_utf8(std::mem::take(&mut payload));
                 payload.zeroize();
                 let name = name?;
                 validate_display_name(&name)?;
@@ -946,7 +950,7 @@ impl RelayFrame {
                     bail!("message too large");
                 }
                 let mut payload = payload.to_vec();
-                let message = String::from_utf8(payload.clone());
+                let message = String::from_utf8(std::mem::take(&mut payload));
                 payload.zeroize();
                 Ok(Self::Chat(message?))
             }
@@ -966,8 +970,8 @@ impl RelayFrame {
                 }
                 let mut sender = sender.to_vec();
                 let mut message = message.to_vec();
-                let sender_text = String::from_utf8(sender.clone());
-                let message_text = String::from_utf8(message.clone());
+                let sender_text = String::from_utf8(std::mem::take(&mut sender));
+                let message_text = String::from_utf8(std::mem::take(&mut message));
                 sender.zeroize();
                 message.zeroize();
                 let sender_text = sender_text?;
@@ -1008,10 +1012,9 @@ async fn read_encrypted(
 }
 
 fn encrypt_frame(transport: &mut TransportState, frame: RelayFrame) -> Result<Vec<u8>> {
-    let mut plaintext = frame.encode()?;
+    let plaintext = zeroize::Zeroizing::new(frame.encode()?);
     let mut encrypted = vec![0_u8; plaintext.len() + 16];
     let len = transport.write_message(&plaintext, &mut encrypted)?;
-    plaintext.zeroize();
     encrypted.truncate(len);
     Ok(encrypted)
 }
