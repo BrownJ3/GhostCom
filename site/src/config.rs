@@ -1,4 +1,5 @@
 use std::env;
+use subtle::ConstantTimeEq;
 
 const ACCESS_TOKEN_ENV: &str = "GHSTCOM_RELAY_ACCESS_TOKEN";
 const RELAY_ENABLED_ENV: &str = "GHSTCOM_RELAY_ENABLED";
@@ -27,7 +28,7 @@ impl SiteConfig {
         match (self.access_token.as_deref(), supplied) {
             (None, _) => true,
             (Some(expected), Some(supplied)) => {
-                constant_time_eq(expected.as_bytes(), supplied.as_bytes())
+                bool::from(expected.as_bytes().ct_eq(supplied.as_bytes()))
             }
             (Some(_), None) => false,
         }
@@ -63,18 +64,6 @@ fn bool_env(name: &str, default: bool) -> bool {
     }
 }
 
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let max_len = left.len().max(right.len());
-    let mut diff = left.len() ^ right.len();
-
-    for index in 0..max_len {
-        let a = left.get(index).copied().unwrap_or(0);
-        let b = right.get(index).copied().unwrap_or(0);
-        diff |= (a ^ b) as usize;
-    }
-
-    diff == 0
-}
 
 #[cfg(test)]
 mod tests {

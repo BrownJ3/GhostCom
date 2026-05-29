@@ -297,6 +297,7 @@ async fn run_group_room(
     let (peer_event_tx, mut peer_event_rx) = mpsc::channel::<GroupPeerEvent>(64);
     let session_deadline = tokio::time::sleep(MAX_RELAY_SESSION_DURATION);
     tokio::pin!(session_deadline);
+    let mut host_forwarded = 0_u64;
 
     loop {
         tokio::select! {
@@ -337,6 +338,10 @@ async fn run_group_room(
                     Message::Binary(bytes) if bytes.len() > GROUP_PEER_ID_BYTES && bytes.len() <= MAX_RELAY_BINARY_BYTES + GROUP_PEER_ID_BYTES => {
                         let peer_id = u16::from_be_bytes([bytes[0], bytes[1]]);
                         let payload = bytes.slice(GROUP_PEER_ID_BYTES..);
+                        host_forwarded = host_forwarded.saturating_add(payload.len() as u64);
+                        if host_forwarded > MAX_RELAY_BYTES_PER_DIRECTION {
+                            break;
+                        }
                         let Some(peer) = peers.get_mut(&peer_id) else {
                             continue;
                         };
