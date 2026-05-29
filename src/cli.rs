@@ -181,10 +181,10 @@ pub fn parse() -> Result<Command> {
             let bind = match args.next().as_deref() {
                 Some("--bind") => args
                     .next()
-                    .unwrap_or_else(|| "0.0.0.0:7777".to_string())
+                    .unwrap_or_else(|| "127.0.0.1:7777".to_string())
                     .parse()?,
                 Some(addr) => addr.parse()?,
-                None => "0.0.0.0:7777".parse()?,
+                None => "127.0.0.1:7777".parse()?,
             };
             Ok(Command::Listen { bind })
         }
@@ -208,7 +208,7 @@ pub fn parse() -> Result<Command> {
 
 fn print_usage() {
     eprintln!(
-        "GhostCom\n\nStart here:\n  ghstprtcl\n\nAdvanced shortcuts:\n  ghstprtcl relay-call [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-group [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-join [invite-code] [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-device\n  ghstprtcl listen [--bind 0.0.0.0:7777]\n  ghstprtcl connect <host>:7777\n\nAdvanced direct rendezvous:\n  ghstprtcl call --rendezvous wss://your-private-site/rv [--bind 0.0.0.0:7777]\n  ghstprtcl join <invite-code> --rendezvous wss://your-private-site/rv"
+        "GhostCom\n\nStart here:\n  ghstprtcl\n\nAdvanced shortcuts:\n  ghstprtcl relay-call [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-group [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-join [invite-code] [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-device\n  ghstprtcl listen [--bind 127.0.0.1:7777]\n  ghstprtcl connect <host>:7777\n\nAdvanced direct rendezvous:\n  ghstprtcl call --rendezvous wss://your-private-site/rv [--bind 0.0.0.0:7777]\n  ghstprtcl join <invite-code> --rendezvous wss://your-private-site/rv"
     );
 }
 
