@@ -8,6 +8,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signer, SigningKey};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use serde::{Deserialize, Serialize};
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use snow::{Builder, TransportState, params::NoiseParams};
 use std::{
@@ -1659,14 +1660,14 @@ fn invite_auth_proof(
     handshake_hash: &[u8],
     role_label: &[u8],
 ) -> [u8; INVITE_AUTH_PROOF_BYTES] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"GhostCom relay invite authentication v1");
-    hasher.update(role_label);
-    hasher.update([0]);
-    hasher.update(secret.0);
-    hasher.update(handshake_hash);
-    let digest: [u8; INVITE_AUTH_PROOF_BYTES] = hasher.finalize().into();
-    digest
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = HmacSha256::new_from_slice(&secret.0)
+        .expect("HMAC accepts any key length");
+    mac.update(b"GhostCom relay invite authentication v1\0");
+    mac.update(role_label);
+    mac.update(b"\0");
+    mac.update(handshake_hash);
+    mac.finalize().into_bytes().into()
 }
 
 #[cfg(test)]
