@@ -22,10 +22,6 @@ pub enum ClientMessage {
         access_token: Option<String>,
         device_auth: Option<DeviceAuth>,
     },
-    RegisterDevice {
-        registration_token: String,
-        device_auth: DeviceAuth,
-    },
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -51,7 +47,6 @@ pub enum ServerMessage {
         suggested_approval: String,
         expires_at: u64,
     },
-    DeviceRegistered,
     Error { message: String },
 }
 
@@ -74,8 +69,7 @@ impl Drop for ServerMessage {
             | Self::GroupJoined
             | Self::PeerJoined
             | Self::GroupPeerJoined { .. }
-            | Self::GroupPeerLeft { .. }
-            | Self::DeviceRegistered => {}
+            | Self::GroupPeerLeft { .. } => {}
         }
     }
 }

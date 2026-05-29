@@ -4,7 +4,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const ACCESS_TOKEN_ENV: &str = "GHSTCOM_RELAY_ACCESS_TOKEN";
 const ALLOWED_DEVICE_KEYS_ENV: &str = "GHSTCOM_RELAY_ALLOWED_DEVICE_KEYS";
-const DEVICE_REGISTRATION_TOKEN_ENV: &str = "GHSTCOM_RELAY_DEVICE_REGISTRATION_TOKEN";
 const RELAY_ENABLED_ENV: &str = "GHSTCOM_RELAY_ENABLED";
 const RENDEZVOUS_ENABLED_ENV: &str = "GHSTCOM_RENDEZVOUS_ENABLED";
 
@@ -14,7 +13,6 @@ pub struct SiteConfig {
     pub rendezvous_enabled: bool,
     access_token: Option<String>,
     allowed_device_keys: HashMap<String, Option<u64>>,
-    device_registration_token: Option<String>,
 }
 
 impl SiteConfig {
@@ -29,10 +27,6 @@ impl SiteConfig {
             allowed_device_keys: parse_allowed_device_keys(
                 env::var(ALLOWED_DEVICE_KEYS_ENV).ok().as_deref(),
             ),
-            device_registration_token: env::var(DEVICE_REGISTRATION_TOKEN_ENV)
-                .ok()
-                .map(|token| token.trim().to_string())
-                .filter(|token| !token.is_empty()),
         }
     }
 
@@ -62,17 +56,13 @@ impl SiteConfig {
         !self.allowed_device_keys.is_empty()
     }
 
-    pub fn registration_token_matches(&self, supplied: Option<&str>) -> bool {
-        match (self.device_registration_token.as_deref(), supplied) {
-            (Some(expected), Some(supplied)) => {
-                constant_time_eq(expected.as_bytes(), supplied.as_bytes())
-            }
+    /// Returns true only when a key is explicitly in the list but its expiry has passed.
+    /// Unknown keys (not in the list) return false — they are candidates for auto-registration.
+    pub fn device_key_is_revoked(&self, public_key: &str) -> bool {
+        match self.allowed_device_keys.get(public_key) {
+            Some(Some(expires_at)) => current_unix_time() > *expires_at,
             _ => false,
         }
-    }
-
-    pub fn registration_enabled(&self) -> bool {
-        self.device_registration_token.is_some()
     }
 
     #[cfg(test)]
@@ -86,7 +76,6 @@ impl SiteConfig {
             rendezvous_enabled,
             access_token: access_token.map(str::to_string),
             allowed_device_keys: HashMap::new(),
-            device_registration_token: None,
         }
     }
 
@@ -105,26 +94,6 @@ impl SiteConfig {
                 .iter()
                 .filter_map(|entry| parse_allowed_device_entry(entry))
                 .collect(),
-            device_registration_token: None,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn for_tests_with_registration(
-        relay_enabled: bool,
-        access_token: Option<&str>,
-        allowed_device_keys: &[&str],
-        registration_token: &str,
-    ) -> Self {
-        Self {
-            relay_enabled,
-            rendezvous_enabled: false,
-            access_token: access_token.map(str::to_string),
-            allowed_device_keys: allowed_device_keys
-                .iter()
-                .filter_map(|entry| parse_allowed_device_entry(entry))
-                .collect(),
-            device_registration_token: Some(registration_token.to_string()),
         }
     }
 }
@@ -198,7 +167,6 @@ mod tests {
             rendezvous_enabled: true,
             access_token: Some("secret-token".to_string()),
             allowed_device_keys: HashMap::new(),
-            device_registration_token: None,
         };
 
         assert!(config.token_matches(Some("secret-token")));
@@ -213,7 +181,6 @@ mod tests {
             rendezvous_enabled: true,
             access_token: None,
             allowed_device_keys: HashMap::new(),
-            device_registration_token: None,
         };
 
         assert!(config.token_matches(None));

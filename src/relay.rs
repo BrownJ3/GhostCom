@@ -26,7 +26,6 @@ use zeroize::Zeroize;
 type RelaySocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 const ACCESS_TOKEN_ENV: &str = "GHSTCOM_RELAY_ACCESS_TOKEN";
-const DEVICE_REGISTRATION_TOKEN_ENV: &str = "GHSTCOM_RELAY_REGISTRATION_TOKEN";
 const MAX_RELAY_SETUP_BYTES: usize = 512;
 const MAX_NOISE_MESSAGE_BYTES: usize = 32 * 1024;
 const MAX_CHAT_MESSAGE_BYTES: usize = 8 * 1024;
@@ -57,10 +56,6 @@ enum ClientMessage {
         code: String,
         access_token: Option<String>,
         device_auth: Option<DeviceAuth>,
-    },
-    RegisterDevice {
-        registration_token: String,
-        device_auth: DeviceAuth,
     },
 }
 
@@ -107,13 +102,6 @@ impl Drop for ClientMessage {
                     device_auth.zeroize();
                 }
             }
-            Self::RegisterDevice {
-                registration_token,
-                device_auth,
-            } => {
-                registration_token.zeroize();
-                device_auth.zeroize();
-            }
         }
     }
 }
@@ -150,7 +138,6 @@ enum ServerMessage {
         suggested_approval: String,
         expires_at: u64,
     },
-    DeviceRegistered,
     Error {
         message: String,
     },
@@ -247,8 +234,6 @@ fn verify_relay_pin(socket: &RelaySocket, pin: &str) -> Result<()> {
 }
 
 async fn create_relay(relay_url: &str, relay_pin: Option<&str>, secret: &InviteSecret) -> Result<RelaySocket> {
-    try_auto_register(relay_url).await?;
-
     let (mut socket, _) = connect_async(relay_url).await?;
     if let Some(pin) = relay_pin {
         verify_relay_pin(&socket, pin)?;
@@ -318,8 +303,6 @@ async fn create_relay(relay_url: &str, relay_pin: Option<&str>, secret: &InviteS
 }
 
 async fn create_group_relay(relay_url: &str, relay_pin: Option<&str>, secret: &InviteSecret) -> Result<RelaySocket> {
-    try_auto_register(relay_url).await?;
-
     let (mut socket, _) = connect_async(relay_url).await?;
     if let Some(pin) = relay_pin {
         verify_relay_pin(&socket, pin)?;
@@ -361,7 +344,6 @@ async fn create_group_relay(relay_url: &str, relay_pin: Option<&str>, secret: &I
 
 async fn join_relay(relay_url: &str, relay_pin: Option<&str>, code: &str, group: bool) -> Result<RelaySocket> {
     validate_relay_code(code)?;
-    try_auto_register(relay_url).await?;
 
     let (mut socket, _) = connect_async(relay_url).await?;
     if let Some(pin) = relay_pin {
@@ -411,48 +393,6 @@ fn relay_access_token() -> Option<String> {
         .filter(|token| !token.is_empty())
 }
 
-fn relay_registration_token() -> Option<String> {
-    std::env::var(DEVICE_REGISTRATION_TOKEN_ENV)
-        .ok()
-        .map(|token| token.trim().to_string())
-        .filter(|token| !token.is_empty())
-}
-
-async fn try_auto_register(relay_url: &str) -> Result<()> {
-    let Some(token) = relay_registration_token() else {
-        return Ok(());
-    };
-    register_device(relay_url, token).await
-}
-
-async fn register_device(relay_url: &str, mut registration_token: String) -> Result<()> {
-    chat_status("Registering device with relay...")?;
-    let (mut socket, _) = connect_async(relay_url).await?;
-    let auth = device_auth("register", None)?;
-    let Some(auth) = auth else {
-        bail!("device auth unavailable");
-    };
-    send_setup(
-        &mut socket,
-        ClientMessage::RegisterDevice {
-            registration_token: registration_token.clone(),
-            device_auth: auth,
-        },
-    )
-    .await?;
-    registration_token.zeroize();
-
-    match read_setup(&mut socket).await? {
-        ServerMessage::DeviceRegistered => {
-            chat_success("Device registered with relay.")?;
-            Ok(())
-        }
-        ServerMessage::Error { message } => {
-            bail!("device registration failed: {}", sanitize_for_terminal(&message))
-        }
-        _ => bail!("unexpected response to device registration"),
-    }
-}
 
 fn device_approval_required(
     public_key: String,

@@ -104,6 +104,10 @@ impl RelayState {
         self.config.device_key_allowed(public_key)
     }
 
+    pub fn device_key_is_revoked(&self, public_key: &str) -> bool {
+        self.config.device_key_is_revoked(public_key)
+    }
+
     pub async fn device_key_allowed_runtime(&self, public_key: &str) -> bool {
         if self.config.device_key_allowed(public_key) {
             return true;
@@ -113,14 +117,6 @@ impl RelayState {
 
     pub async fn approve_device(&self, public_key: String) {
         self.runtime_approved_devices.lock().await.insert(public_key);
-    }
-
-    pub fn registration_token_matches(&self, supplied: Option<&str>) -> bool {
-        self.config.registration_token_matches(supplied)
-    }
-
-    pub fn registration_enabled(&self) -> bool {
-        self.config.registration_enabled()
     }
 
     pub async fn cleanup_expired(&self) {
