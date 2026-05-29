@@ -2,7 +2,9 @@ use crate::terminal::line_ui::sanitize_for_terminal;
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use zeroize::Zeroize;
 
 const ACCESS_TOKEN_ENV: &str = "GHSTCOM_RELAY_ACCESS_TOKEN";
 const MAX_WS_TEXT_BYTES: usize = 512;
@@ -86,7 +88,15 @@ pub async fn join_invite(rendezvous_url: &str, code: &str) -> Result<String> {
     .await?;
 
     match read_message(&mut socket).await? {
-        ServerMessage::Candidate { addr } => Ok(addr),
+        ServerMessage::Candidate { addr } => {
+            let parsed: SocketAddr = addr
+                .parse()
+                .with_context(|| format!("rendezvous returned invalid address: {addr}"))?;
+            if is_private_ip(&parsed.ip()) {
+                bail!("rendezvous returned a non-routable address; possible SSRF: {addr}");
+            }
+            Ok(addr)
+        }
         ServerMessage::Error { message } => {
             bail!("rendezvous error: {}", sanitize_for_terminal(&message))
         }
@@ -94,11 +104,29 @@ pub async fn join_invite(rendezvous_url: &str, code: &str) -> Result<String> {
     }
 }
 
+fn is_private_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_private_v4(v4),
+        IpAddr::V6(v6) => is_private_v6(v6),
+    }
+}
+
+fn is_private_v4(ip: &Ipv4Addr) -> bool {
+    ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified()
+}
+
+fn is_private_v6(ip: &Ipv6Addr) -> bool {
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.octets()[0] == 0xfd // ULA fd00::/8
+        || matches!(ip.to_ipv4_mapped(), Some(v4) if is_private_v4(&v4))
+}
+
 fn relay_access_token() -> Option<String> {
-    std::env::var(ACCESS_TOKEN_ENV)
-        .ok()
-        .map(|token| token.trim().to_string())
-        .filter(|token| !token.is_empty())
+    let mut raw = std::env::var(ACCESS_TOKEN_ENV).ok()?;
+    let trimmed = raw.trim().to_string();
+    raw.zeroize();
+    if trimmed.is_empty() { None } else { Some(trimmed) }
 }
 
 async fn send_message<S>(socket: &mut S, message: ClientMessage) -> Result<()>
@@ -106,11 +134,14 @@ where
     S: SinkExt<Message> + Unpin,
     <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
 {
-    let text = serde_json::to_string(&message)?;
+    let mut text = serde_json::to_string(&message)?;
     if text.len() > MAX_WS_TEXT_BYTES {
+        text.zeroize();
         bail!("rendezvous message too large");
     }
-    socket.send(Message::Text(text.into())).await?;
+    let result = socket.send(Message::Text(std::mem::take(&mut text).into())).await;
+    text.zeroize();
+    result?;
     Ok(())
 }
 
