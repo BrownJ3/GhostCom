@@ -1664,11 +1664,17 @@ impl RelayInvite {
     }
 
     fn format(room_code: &str, secret: &InviteSecret) -> String {
-        format!("{room_code}.{}", secret.encode())
+        let mut encoded = secret.encode();
+        let invite = format!("{room_code}.{encoded}");
+        encoded.zeroize();
+        invite
     }
 
     fn format_group(room_code: &str, secret: &InviteSecret) -> String {
-        format!("g:{room_code}.{}", secret.encode())
+        let mut encoded = secret.encode();
+        let invite = format!("g:{room_code}.{encoded}");
+        encoded.zeroize();
+        invite
     }
 
     fn room_code(&self) -> &str {
