@@ -43,15 +43,13 @@ async fn accept_secure_connection(listener: TcpListener) -> Result<()> {
     let (socket, peer_addr) = listener.accept().await?;
     println!("Incoming connection from {peer_addr}");
 
-    let identity = generate_ephemeral_identity()?;
+    let mut identity = generate_ephemeral_identity()?;
     let local_cert = identity
-        .cert_chain
-        .first()
-        .cloned()
+        .first_cert()
         .context("local identity did not include a certificate")?;
     let config = ServerConfig::builder()
         .with_client_cert_verifier(ManualPeerVerifier::new())
-        .with_single_cert(identity.cert_chain, identity.private_key)?;
+        .with_single_cert(identity.take_cert_chain(), identity.take_private_key()?)?;
 
     let acceptor = TlsAcceptor::from(Arc::new(config));
     let mut stream = acceptor.accept(socket).await?;
@@ -82,16 +80,14 @@ pub async fn connect(target: String) -> Result<()> {
     println!("Connecting to {target}...");
     let socket = TcpStream::connect(&target).await?;
 
-    let identity = generate_ephemeral_identity()?;
+    let mut identity = generate_ephemeral_identity()?;
     let local_cert = identity
-        .cert_chain
-        .first()
-        .cloned()
+        .first_cert()
         .context("local identity did not include a certificate")?;
     let config = ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(ManualPeerVerifier::new())
-        .with_client_auth_cert(identity.cert_chain, identity.private_key)?;
+        .with_client_auth_cert(identity.take_cert_chain(), identity.take_private_key()?)?;
 
     let connector = TlsConnector::from(Arc::new(config));
     let server_name = ServerName::try_from("ghostcom.local")?.to_owned();
@@ -131,10 +127,10 @@ mod tests {
 
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let identity = generate_ephemeral_identity().unwrap();
+            let mut identity = generate_ephemeral_identity().unwrap();
             let config = ServerConfig::builder()
                 .with_client_cert_verifier(ManualPeerVerifier::new())
-                .with_single_cert(identity.cert_chain, identity.private_key)
+                .with_single_cert(identity.take_cert_chain(), identity.take_private_key().unwrap())
                 .unwrap();
 
             let acceptor = TlsAcceptor::from(Arc::new(config));
@@ -146,11 +142,11 @@ mod tests {
             peer_cert_count
         });
 
-        let identity = generate_ephemeral_identity().unwrap();
+        let mut identity = generate_ephemeral_identity().unwrap();
         let config = ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(ManualPeerVerifier::new())
-            .with_client_auth_cert(identity.cert_chain, identity.private_key)
+            .with_client_auth_cert(identity.take_cert_chain(), identity.take_private_key().unwrap())
             .unwrap();
 
         let socket = TcpStream::connect(addr).await.unwrap();
