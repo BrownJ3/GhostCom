@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use subtle::ConstantTimeEq;
+use subtle::{ConstantTimeEq, ConstantTimeEq as _};
 use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 use zeroize::Zeroize;
@@ -115,10 +115,10 @@ pub async fn join(mut code: String, relay_url: String, relay_pin: Option<String>
 }
 
 fn relay_access_token() -> Option<String> {
-    std::env::var(ACCESS_TOKEN_ENV)
-        .ok()
-        .map(|token| token.trim().to_string())
-        .filter(|token| !token.is_empty())
+    let mut raw = std::env::var(ACCESS_TOKEN_ENV).ok()?;
+    let trimmed = raw.trim().to_string();
+    raw.zeroize();
+    if trimmed.is_empty() { None } else { Some(trimmed) }
 }
 
 fn verify_relay_pin(socket: &RelaySocket, pin: &str) -> Result<()> {
@@ -137,7 +137,14 @@ fn verify_relay_pin(socket: &RelaySocket, pin: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("relay did not present a TLS certificate"))?;
     let digest = Sha256::digest(leaf.as_ref());
     let actual: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    if actual != pin {
+
+    // Decode the expected pin from hex and compare with constant-time equality.
+    let pin_bytes: Vec<u8> = (0..pin.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&pin[i..i + 2], 16))
+        .collect::<Result<_, _>>()
+        .map_err(|_| anyhow::anyhow!("--relay-pin contains invalid hex"))?;
+    if !bool::from(digest.as_slice().ct_eq(pin_bytes.as_slice())) {
         bail!(
             "relay TLS certificate fingerprint mismatch\n  expected: {pin}\n  actual:   {actual}\nUpdate --relay-pin or verify the relay is legitimate."
         );
