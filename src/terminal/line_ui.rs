@@ -378,7 +378,12 @@ fn is_terminal_unsafe(ch: char) -> bool {
     ch.is_control()
         || matches!(
             ch,
-            '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            // C1 control codes (U+0080–U+009F) can trigger escape sequences on
+            // ISO-8859 terminals, including CSI (U+009B).
+            '\u{0080}'..='\u{009f}'
+            | '\u{200e}' | '\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
         )
 }
 
