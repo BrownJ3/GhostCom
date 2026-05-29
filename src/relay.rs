@@ -155,21 +155,21 @@ pub enum RelayRole {
     Joiner,
 }
 
-pub async fn call(relay_url: String) -> Result<()> {
+pub async fn call(relay_url: String, relay_pin: Option<String>) -> Result<()> {
     chat_status("Creating secure invite...")?;
     let secret = InviteSecret::generate();
-    let socket = create_relay(&relay_url, &secret).await?;
+    let socket = create_relay(&relay_url, relay_pin.as_deref(), &secret).await?;
     run_noise_chat(socket, RelayRole::Caller, Some(secret)).await
 }
 
-pub async fn group(relay_url: String) -> Result<()> {
+pub async fn group(relay_url: String, relay_pin: Option<String>) -> Result<()> {
     chat_status("Creating secure group invite...")?;
     let secret = InviteSecret::generate();
-    let socket = create_group_relay(&relay_url, &secret).await?;
+    let socket = create_group_relay(&relay_url, relay_pin.as_deref(), &secret).await?;
     run_group_host(socket, secret).await
 }
 
-pub async fn join(mut code: String, relay_url: String) -> Result<()> {
+pub async fn join(mut code: String, relay_url: String, relay_pin: Option<String>) -> Result<()> {
     chat_status("Joining secure invite...")?;
     let invite = match RelayInvite::parse(&code) {
         Ok(invite) => invite,
@@ -179,7 +179,7 @@ pub async fn join(mut code: String, relay_url: String) -> Result<()> {
         }
     };
     code.zeroize();
-    let socket = join_relay(&relay_url, invite.room_code(), invite.is_group()).await?;
+    let socket = join_relay(&relay_url, relay_pin.as_deref(), invite.room_code(), invite.is_group()).await?;
     if invite.is_group() {
         let Some(secret) = invite.into_secret() else {
             bail!("group invite is missing its authentication secret");
@@ -209,8 +209,35 @@ pub async fn device() -> Result<()> {
     Ok(())
 }
 
-async fn create_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySocket> {
+fn verify_relay_pin(socket: &RelaySocket, pin: &str) -> Result<()> {
+    let pin = pin.trim().to_ascii_lowercase();
+    if pin.len() != 64 || !pin.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("--relay-pin must be a 64-character SHA-256 hex fingerprint");
+    }
+    let tls = match socket.get_ref() {
+        MaybeTlsStream::Rustls(tls) => tls,
+        _ => bail!("relay connection is not TLS — --relay-pin requires a wss:// URL"),
+    };
+    let (_, conn) = tls.get_ref();
+    let leaf = conn
+        .peer_certificates()
+        .and_then(|c| c.first())
+        .ok_or_else(|| anyhow::anyhow!("relay did not present a TLS certificate"))?;
+    let digest = Sha256::digest(leaf.as_ref());
+    let actual: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    if actual != pin {
+        bail!(
+            "relay TLS certificate fingerprint mismatch\n  expected: {pin}\n  actual:   {actual}\nUpdate --relay-pin or verify the relay is legitimate."
+        );
+    }
+    Ok(())
+}
+
+async fn create_relay(relay_url: &str, relay_pin: Option<&str>, secret: &InviteSecret) -> Result<RelaySocket> {
     let (mut socket, _) = connect_async(relay_url).await?;
+    if let Some(pin) = relay_pin {
+        verify_relay_pin(&socket, pin)?;
+    }
     send_setup(
         &mut socket,
         ClientMessage::Create {
@@ -275,8 +302,11 @@ async fn create_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySoc
     }
 }
 
-async fn create_group_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySocket> {
+async fn create_group_relay(relay_url: &str, relay_pin: Option<&str>, secret: &InviteSecret) -> Result<RelaySocket> {
     let (mut socket, _) = connect_async(relay_url).await?;
+    if let Some(pin) = relay_pin {
+        verify_relay_pin(&socket, pin)?;
+    }
     send_setup(
         &mut socket,
         ClientMessage::GroupCreate {
@@ -312,10 +342,13 @@ async fn create_group_relay(relay_url: &str, secret: &InviteSecret) -> Result<Re
     }
 }
 
-async fn join_relay(relay_url: &str, code: &str, group: bool) -> Result<RelaySocket> {
+async fn join_relay(relay_url: &str, relay_pin: Option<&str>, code: &str, group: bool) -> Result<RelaySocket> {
     validate_relay_code(code)?;
 
     let (mut socket, _) = connect_async(relay_url).await?;
+    if let Some(pin) = relay_pin {
+        verify_relay_pin(&socket, pin)?;
+    }
     let setup = if group {
         ClientMessage::GroupJoin {
             code: code.to_string(),
