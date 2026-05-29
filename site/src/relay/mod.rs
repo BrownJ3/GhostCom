@@ -4,16 +4,13 @@ use axum::extract::{
     ws::{Message, WebSocket, WebSocketUpgrade},
 };
 use axum::http::HeaderMap;
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use futures_util::{SinkExt, StreamExt, stream::SplitStream};
-use protocol::{ClientMessage, DeviceAuth, HostControlMessage, ServerMessage};
-use sha2::{Digest, Sha256};
+use protocol::{ClientMessage, HostControlMessage, ServerMessage};
 pub use state::RelayState;
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroize;
@@ -31,9 +28,6 @@ const MAX_RELAY_SESSION_DURATION: Duration = Duration::from_secs(60 * 60);
 const GROUP_JOIN_QUEUE: usize = 16;
 const GROUP_MAX_PEERS: usize = 8;
 const GROUP_PEER_ID_BYTES: usize = 2;
-const DEVICE_PUBLIC_KEY_BYTES: usize = 32;
-const DEVICE_SIGNATURE_BYTES: usize = 64;
-const DEVICE_APPROVAL_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 enum GroupPeerEvent {
     Binary {
@@ -99,54 +93,40 @@ async fn handle_socket_inner(mut socket: WebSocket, state: RelayState, remote_ip
     state.cleanup_expired().await;
 
     match &mut client_message {
-        ClientMessage::Create {
-            access_token,
-            device_auth,
-        } => {
-            if !relay_access_allowed(&state, access_token.as_deref(), device_auth.as_ref(), "create", None).await {
+        ClientMessage::Create { access_token } => {
+            if !state.access_token_matches(access_token.as_deref()) {
                 scrub_access_token(access_token);
-                send_relay_access_denied(&mut socket, &state, device_auth.as_ref()).await;
+                send_error(&mut socket, "relay access denied").await;
                 return;
             }
             scrub_access_token(access_token);
             handle_create(socket, state, remote_ip).await;
         }
-        ClientMessage::GroupCreate {
-            access_token,
-            device_auth,
-        } => {
-            if !relay_access_allowed(&state, access_token.as_deref(), device_auth.as_ref(), "group_create", None).await {
+        ClientMessage::GroupCreate { access_token } => {
+            if !state.access_token_matches(access_token.as_deref()) {
                 scrub_access_token(access_token);
-                send_relay_access_denied(&mut socket, &state, device_auth.as_ref()).await;
+                send_error(&mut socket, "relay access denied").await;
                 return;
             }
             scrub_access_token(access_token);
             handle_group_create(socket, state, remote_ip).await;
         }
-        ClientMessage::Join {
-            code,
-            access_token,
-            device_auth,
-        } => {
-            if !relay_access_allowed(&state, access_token.as_deref(), device_auth.as_ref(), "join", Some(code)).await {
+        ClientMessage::Join { code, access_token } => {
+            if !state.access_token_matches(access_token.as_deref()) {
                 scrub_access_token(access_token);
                 code.zeroize();
-                send_relay_access_denied(&mut socket, &state, device_auth.as_ref()).await;
+                send_error(&mut socket, "relay access denied").await;
                 return;
             }
             scrub_access_token(access_token);
             handle_join(socket, state, remote_ip, code).await;
             code.zeroize();
         }
-        ClientMessage::GroupJoin {
-            code,
-            access_token,
-            device_auth,
-        } => {
-            if !relay_access_allowed(&state, access_token.as_deref(), device_auth.as_ref(), "group_join", Some(code)).await {
+        ClientMessage::GroupJoin { code, access_token } => {
+            if !state.access_token_matches(access_token.as_deref()) {
                 scrub_access_token(access_token);
                 code.zeroize();
-                send_relay_access_denied(&mut socket, &state, device_auth.as_ref()).await;
+                send_error(&mut socket, "relay access denied").await;
                 return;
             }
             scrub_access_token(access_token);
@@ -161,86 +141,6 @@ fn scrub_access_token(access_token: &mut Option<String>) {
         token.zeroize();
     }
     *access_token = None;
-}
-
-async fn relay_access_allowed(
-    state: &RelayState,
-    access_token: Option<&str>,
-    device_auth: Option<&DeviceAuth>,
-    action: &str,
-    code: Option<&str>,
-) -> bool {
-    if !state.access_token_matches(access_token) {
-        return false;
-    }
-
-    if !state.requires_device_key() {
-        return true;
-    }
-
-    let Some(device_auth) = device_auth else {
-        return false;
-    };
-
-    // Key is in the list but its expiry has passed — operator explicitly revoked it.
-    if state.device_key_is_revoked(&device_auth.public_key) {
-        return false;
-    }
-
-    // Key is in the static allowlist and not expired → verify signature and pass.
-    if state.device_key_allowed(&device_auth.public_key) {
-        return verify_device_signature(device_auth, action, code);
-    }
-
-    // Key is in the runtime-approved set (already auto-registered this session).
-    if state.device_key_allowed_runtime(&device_auth.public_key).await {
-        return verify_device_signature(device_auth, action, code);
-    }
-
-    // Key is unknown. Access token already passed and signature is valid →
-    // auto-register so this device can connect without any operator step.
-    if verify_device_signature(device_auth, action, code) {
-        state.approve_device(device_auth.public_key.clone()).await;
-        return true;
-    }
-
-    false
-}
-
-fn verify_device_signature(device_auth: &DeviceAuth, action: &str, code: Option<&str>) -> bool {
-    let Ok(public_key_bytes) = URL_SAFE_NO_PAD.decode(&device_auth.public_key) else {
-        return false;
-    };
-    let Ok(signature_bytes) = URL_SAFE_NO_PAD.decode(&device_auth.signature) else {
-        return false;
-    };
-    if public_key_bytes.len() != DEVICE_PUBLIC_KEY_BYTES
-        || signature_bytes.len() != DEVICE_SIGNATURE_BYTES
-    {
-        return false;
-    }
-
-    let Ok(public_key) = VerifyingKey::from_bytes(&public_key_bytes.try_into().unwrap()) else {
-        return false;
-    };
-    let signature = Signature::from_bytes(&signature_bytes.try_into().unwrap());
-    let payload = protocol::device_auth_payload(action, code, &device_auth.nonce);
-
-    public_key.verify(payload.as_bytes(), &signature).is_ok()
-}
-
-fn device_fingerprint(public_key: &str) -> String {
-    let digest = Sha256::digest(public_key.as_bytes());
-    digest[..8]
-        .chunks(2)
-        .map(|chunk| {
-            chunk
-                .iter()
-                .map(|byte| format!("{byte:02X}"))
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("-")
 }
 
 async fn handle_create(mut caller: WebSocket, state: RelayState, remote_ip: IpAddr) {
@@ -570,43 +470,6 @@ async fn send_error(socket: &mut WebSocket, message: &str) {
     .await;
 }
 
-async fn send_relay_access_denied(
-    socket: &mut WebSocket,
-    state: &RelayState,
-    device_auth: Option<&DeviceAuth>,
-) {
-    if state.requires_device_key() {
-        if let Some(device_auth) = device_auth {
-            let expires_at = default_device_approval_expiry();
-            let _ = send_server_message(
-                socket,
-                ServerMessage::DeviceApprovalRequired {
-                    public_key: device_auth.public_key.clone(),
-                    fingerprint: device_fingerprint(&device_auth.public_key),
-                    suggested_approval: suggested_device_approval(&device_auth.public_key, expires_at),
-                    expires_at,
-                },
-            )
-            .await;
-            return;
-        }
-    }
-
-    send_error(socket, "relay access denied").await;
-}
-
-fn default_device_approval_expiry() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration + DEVICE_APPROVAL_TTL)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(DEVICE_APPROVAL_TTL.as_secs())
-}
-
-fn suggested_device_approval(public_key: &str, expires_at: u64) -> String {
-    format!("{public_key}@{expires_at}")
-}
-
 async fn send_server_message(
     socket: &mut WebSocket,
     message: ServerMessage,
@@ -622,113 +485,70 @@ async fn send_server_message(
 mod tests {
     use super::*;
     use crate::{app::app_with_config, config::SiteConfig};
-    use ed25519_dalek::{Signer, SigningKey};
     use futures_util::{SinkExt, StreamExt};
     use serde_json::json;
     use std::net::SocketAddr;
     use tokio_tungstenite::{connect_async, tungstenite::Message};
 
     #[tokio::test]
-    async fn relay_auto_registers_unknown_device_with_valid_signature() {
-        let new_device = SigningKey::from_bytes(&[7; DEVICE_PUBLIC_KEY_BYTES]);
-        let other = SigningKey::from_bytes(&[9; DEVICE_PUBLIC_KEY_BYTES]);
-        let other_key = URL_SAFE_NO_PAD.encode(other.verifying_key().as_bytes());
-
-        let (url, server) = spawn_relay_with_devices(&[&other_key]).await;
+    async fn relay_allows_open_access_without_token() {
+        let (url, server) = spawn_relay(None).await;
         let (mut socket, _) = connect_async(&url).await.unwrap();
         socket
             .send(Message::Text(
-                json!({
-                    "type": "create",
-                    "access_token": null,
-                    "device_auth": test_device_auth(&new_device, "create", None)
-                })
-                .to_string()
-                .into(),
+                json!({"type": "create", "access_token": null}).to_string().into(),
             ))
             .await
             .unwrap();
-
         let response = read_test_message(&mut socket).await;
-        assert_eq!(response["type"], "created", "unknown device with valid signature should auto-register");
-
+        assert_eq!(response["type"], "created");
         server.abort();
     }
 
     #[tokio::test]
-    async fn relay_accepts_allowlisted_signed_device() {
-        let approved = SigningKey::from_bytes(&[11; DEVICE_PUBLIC_KEY_BYTES]);
-        let approved_public_key = URL_SAFE_NO_PAD.encode(approved.verifying_key().as_bytes());
-
-        let (url, server) = spawn_relay_with_devices(&[&approved_public_key]).await;
+    async fn relay_rejects_wrong_access_token() {
+        let (url, server) = spawn_relay(Some("secret")).await;
         let (mut socket, _) = connect_async(&url).await.unwrap();
         socket
             .send(Message::Text(
-                json!({
-                    "type": "create",
-                    "access_token": null,
-                    "device_auth": test_device_auth(&approved, "create", None)
-                })
-                .to_string()
-                .into(),
+                json!({"type": "create", "access_token": "wrong"}).to_string().into(),
             ))
             .await
             .unwrap();
-
         let response = read_test_message(&mut socket).await;
-
-        assert_eq!(response["type"], "created");
-        assert!(response["code"].as_str().is_some());
-
+        assert_eq!(response["type"], "error");
         server.abort();
     }
 
-    async fn spawn_relay_with_devices(
-        allowed_device_keys: &[&str],
-    ) -> (String, tokio::task::JoinHandle<()>) {
+    #[tokio::test]
+    async fn relay_accepts_correct_access_token() {
+        let (url, server) = spawn_relay(Some("secret")).await;
+        let (mut socket, _) = connect_async(&url).await.unwrap();
+        socket
+            .send(Message::Text(
+                json!({"type": "create", "access_token": "secret"}).to_string().into(),
+            ))
+            .await
+            .unwrap();
+        let response = read_test_message(&mut socket).await;
+        assert_eq!(response["type"], "created");
+        server.abort();
+    }
+
+    async fn spawn_relay(access_token: Option<&str>) -> (String, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let allowed_device_keys = allowed_device_keys
-            .iter()
-            .map(|key| key.to_string())
-            .collect::<Vec<_>>();
+        let token = access_token.map(str::to_string);
         let server = tokio::spawn(async move {
-            let allowed_device_keys = allowed_device_keys
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
             axum::serve(
                 listener,
-                app_with_config(SiteConfig::for_tests_with_devices(
-                    true,
-                    false,
-                    None,
-                    &allowed_device_keys,
-                ))
-                .into_make_service_with_connect_info::<SocketAddr>(),
+                app_with_config(SiteConfig::for_tests(true, false, token.as_deref()))
+                    .into_make_service_with_connect_info::<SocketAddr>(),
             )
             .await
             .unwrap();
         });
-
         (format!("ws://{addr}/relay"), server)
-    }
-
-    fn test_device_auth(
-        signing_key: &SigningKey,
-        action: &str,
-        code: Option<&str>,
-    ) -> serde_json::Value {
-        let public_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes());
-        let nonce = "test-nonce";
-        let payload = protocol::device_auth_payload(action, code, nonce);
-        let signature = URL_SAFE_NO_PAD.encode(signing_key.sign(payload.as_bytes()).to_bytes());
-
-        json!({
-            "public_key": public_key,
-            "nonce": nonce,
-            "signature": signature
-        })
     }
 
     async fn read_test_message<S>(socket: &mut S) -> serde_json::Value
@@ -739,63 +559,5 @@ mod tests {
             Message::Text(text) => serde_json::from_str(&text).unwrap(),
             other => panic!("unexpected message: {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn device_auto_registers_on_first_connect() {
-        let new_device = SigningKey::from_bytes(&[13; DEVICE_PUBLIC_KEY_BYTES]);
-        // Start relay with a device key restriction in place (non-empty list) but
-        // this device is not pre-approved.
-        let other_device = SigningKey::from_bytes(&[15; DEVICE_PUBLIC_KEY_BYTES]);
-        let other_key = URL_SAFE_NO_PAD.encode(other_device.verifying_key().as_bytes());
-        let (url, server) = spawn_relay_with_devices(&[&other_key]).await;
-
-        // First connect: device is unknown but signature is valid — should auto-register.
-        let (mut socket, _) = connect_async(&url).await.unwrap();
-        socket
-            .send(Message::Text(
-                json!({
-                    "type": "create",
-                    "access_token": null,
-                    "device_auth": test_device_auth(&new_device, "create", None)
-                })
-                .to_string()
-                .into(),
-            ))
-            .await
-            .unwrap();
-
-        let response = read_test_message(&mut socket).await;
-        assert_eq!(response["type"], "created", "auto-registration should allow first connect");
-
-        server.abort();
-    }
-
-    #[tokio::test]
-    async fn revoked_device_is_blocked() {
-        let revoked = SigningKey::from_bytes(&[16; DEVICE_PUBLIC_KEY_BYTES]);
-        let revoked_key = URL_SAFE_NO_PAD.encode(revoked.verifying_key().as_bytes());
-        // Add key with Unix timestamp 1 (already expired) to signal revocation.
-        let revoked_entry = format!("{revoked_key}@1");
-        let (url, server) = spawn_relay_with_devices(&[&revoked_entry]).await;
-
-        let (mut socket, _) = connect_async(&url).await.unwrap();
-        socket
-            .send(Message::Text(
-                json!({
-                    "type": "create",
-                    "access_token": null,
-                    "device_auth": test_device_auth(&revoked, "create", None)
-                })
-                .to_string()
-                .into(),
-            ))
-            .await
-            .unwrap();
-
-        let response = read_test_message(&mut socket).await;
-        assert_eq!(response["type"], "device_approval_required", "revoked device must be blocked");
-
-        server.abort();
     }
 }

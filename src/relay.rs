@@ -5,7 +5,6 @@ use crate::terminal::line_ui::{
 };
 use anyhow::{Result, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use ed25519_dalek::{Signer, SigningKey};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use serde::{Deserialize, Serialize};
 use hmac::{Hmac, Mac};
@@ -13,10 +12,8 @@ use sha2::{Digest, Sha256};
 use snow::{Builder, TransportState, params::NoiseParams};
 use std::{
     collections::HashMap,
-    fs,
-    path::PathBuf,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 use subtle::ConstantTimeEq;
 use tokio::sync::{Mutex, mpsc};
@@ -33,114 +30,41 @@ const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 const INVITE_SECRET_BYTES: usize = 32;
 const INVITE_AUTH_PROOF_BYTES: usize = 32;
 const GROUP_PEER_ID_BYTES: usize = 2;
-const DEVICE_SECRET_BYTES: usize = 32;
-const DEVICE_APPROVAL_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
-    Create {
-        access_token: Option<String>,
-        device_auth: Option<DeviceAuth>,
-    },
-    GroupCreate {
-        access_token: Option<String>,
-        device_auth: Option<DeviceAuth>,
-    },
-    Join {
-        code: String,
-        access_token: Option<String>,
-        device_auth: Option<DeviceAuth>,
-    },
-    GroupJoin {
-        code: String,
-        access_token: Option<String>,
-        device_auth: Option<DeviceAuth>,
-    },
-}
-
-#[derive(Debug, Serialize)]
-struct DeviceAuth {
-    public_key: String,
-    nonce: String,
-    signature: String,
+    Create { access_token: Option<String> },
+    GroupCreate { access_token: Option<String> },
+    Join { code: String, access_token: Option<String> },
+    GroupJoin { code: String, access_token: Option<String> },
 }
 
 impl Drop for ClientMessage {
     fn drop(&mut self) {
         match self {
-            Self::Create {
-                access_token,
-                device_auth,
+            Self::Create { access_token } | Self::GroupCreate { access_token } => {
+                if let Some(token) = access_token { token.zeroize(); }
             }
-            | Self::GroupCreate {
-                access_token,
-                device_auth,
-            } => {
-                if let Some(token) = access_token {
-                    token.zeroize();
-                }
-                if let Some(device_auth) = device_auth {
-                    device_auth.zeroize();
-                }
-            }
-            Self::Join {
-                code,
-                access_token,
-                device_auth,
-            }
-            | Self::GroupJoin {
-                code,
-                access_token,
-                device_auth,
-            } => {
+            Self::Join { code, access_token } | Self::GroupJoin { code, access_token } => {
                 code.zeroize();
-                if let Some(token) = access_token {
-                    token.zeroize();
-                }
-                if let Some(device_auth) = device_auth {
-                    device_auth.zeroize();
-                }
+                if let Some(token) = access_token { token.zeroize(); }
             }
         }
-    }
-}
-
-impl DeviceAuth {
-    fn zeroize(&mut self) {
-        self.public_key.zeroize();
-        self.nonce.zeroize();
-        self.signature.zeroize();
     }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerMessage {
-    Created {
-        code: String,
-    },
-    GroupCreated {
-        code: String,
-    },
+    Created { code: String },
+    GroupCreated { code: String },
     Joined,
     GroupJoined,
     PeerJoined,
-    GroupPeerJoined {
-        peer_id: u16,
-    },
-    GroupPeerLeft {
-        peer_id: u16,
-    },
-    DeviceApprovalRequired {
-        public_key: String,
-        fingerprint: String,
-        suggested_approval: String,
-        expires_at: u64,
-    },
-    Error {
-        message: String,
-    },
+    GroupPeerJoined { peer_id: u16 },
+    GroupPeerLeft { peer_id: u16 },
+    Error { message: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -190,23 +114,11 @@ pub async fn join(mut code: String, relay_url: String, relay_pin: Option<String>
     }
 }
 
-pub async fn device() -> Result<()> {
-    let signing_key = load_or_create_device_key()?;
-    let public_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes());
-    let fingerprint = device_fingerprint(&public_key);
-    let expires_at = default_device_approval_expiry();
-
-    println!("Relay device");
-    println!("--------------------------------------------------");
-    println!("Fingerprint:");
-    println!("  {fingerprint}");
-    println!("Public key:");
-    println!("  {public_key}");
-    println!("Suggested 30-day allowlist entry:");
-    println!("  {public_key}@{expires_at}");
-    println!("--------------------------------------------------");
-    println!("Add the suggested entry to GHSTCOM_RELAY_ALLOWED_DEVICE_KEYS on the relay.");
-    Ok(())
+fn relay_access_token() -> Option<String> {
+    std::env::var(ACCESS_TOKEN_ENV)
+        .ok()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
 }
 
 fn verify_relay_pin(socket: &RelaySocket, pin: &str) -> Result<()> {
@@ -215,7 +127,7 @@ fn verify_relay_pin(socket: &RelaySocket, pin: &str) -> Result<()> {
         bail!("--relay-pin must be a 64-character SHA-256 hex fingerprint");
     }
     let tls = match socket.get_ref() {
-        MaybeTlsStream::Rustls(tls) => tls,
+        tokio_tungstenite::MaybeTlsStream::Rustls(tls) => tls,
         _ => bail!("relay connection is not TLS — --relay-pin requires a wss:// URL"),
     };
     let (_, conn) = tls.get_ref();
@@ -235,17 +147,8 @@ fn verify_relay_pin(socket: &RelaySocket, pin: &str) -> Result<()> {
 
 async fn create_relay(relay_url: &str, relay_pin: Option<&str>, secret: &InviteSecret) -> Result<RelaySocket> {
     let (mut socket, _) = connect_async(relay_url).await?;
-    if let Some(pin) = relay_pin {
-        verify_relay_pin(&socket, pin)?;
-    }
-    send_setup(
-        &mut socket,
-        ClientMessage::Create {
-            access_token: relay_access_token(),
-            device_auth: device_auth("create", None)?,
-        },
-    )
-    .await?;
+    if let Some(pin) = relay_pin { verify_relay_pin(&socket, pin)?; }
+    send_setup(&mut socket, ClientMessage::Create { access_token: relay_access_token() }).await?;
 
     match read_setup(&mut socket).await? {
         ServerMessage::Created { code } => {
@@ -256,22 +159,7 @@ async fn create_relay(relay_url: &str, relay_pin: Option<&str>, secret: &InviteS
             invite_result?;
             chat_status("Waiting for peer to join...")?;
         }
-        ServerMessage::Error { message } => {
-            bail!("relay error: {}", sanitize_for_terminal(&message))
-        }
-        ServerMessage::DeviceApprovalRequired {
-            public_key,
-            fingerprint,
-            suggested_approval,
-            expires_at,
-        } => {
-            return device_approval_required(
-                public_key,
-                fingerprint,
-                suggested_approval,
-                expires_at,
-            );
-        }
+        ServerMessage::Error { message } => bail!("relay error: {}", sanitize_for_terminal(&message)),
         _ => bail!("unexpected relay response"),
     }
 
@@ -281,22 +169,7 @@ async fn create_relay(relay_url: &str, relay_pin: Option<&str>, secret: &InviteS
                 chat_status("Peer joined. Establishing end-to-end encryption...")?;
                 return Ok(socket);
             }
-            ServerMessage::Error { message } => {
-                bail!("relay error: {}", sanitize_for_terminal(&message))
-            }
-            ServerMessage::DeviceApprovalRequired {
-                public_key,
-                fingerprint,
-                suggested_approval,
-                expires_at,
-            } => {
-                return device_approval_required(
-                    public_key,
-                    fingerprint,
-                    suggested_approval,
-                    expires_at,
-                );
-            }
+            ServerMessage::Error { message } => bail!("relay error: {}", sanitize_for_terminal(&message)),
             _ => {}
         }
     }
@@ -304,217 +177,41 @@ async fn create_relay(relay_url: &str, relay_pin: Option<&str>, secret: &InviteS
 
 async fn create_group_relay(relay_url: &str, relay_pin: Option<&str>, secret: &InviteSecret) -> Result<RelaySocket> {
     let (mut socket, _) = connect_async(relay_url).await?;
-    if let Some(pin) = relay_pin {
-        verify_relay_pin(&socket, pin)?;
-    }
-    send_setup(
-        &mut socket,
-        ClientMessage::GroupCreate {
-            access_token: relay_access_token(),
-            device_auth: device_auth("group_create", None)?,
-        },
-    )
-    .await?;
+    if let Some(pin) = relay_pin { verify_relay_pin(&socket, pin)?; }
+    send_setup(&mut socket, ClientMessage::GroupCreate { access_token: relay_access_token() }).await?;
 
     match read_setup(&mut socket).await? {
         ServerMessage::GroupCreated { code } => {
             validate_relay_code(&code)?;
             let mut invite = RelayInvite::format_group(&code, secret);
-            let invite_result = print_invite_box(
-                "Share this group invite code with trusted participants:",
-                &invite,
-            );
+            let invite_result = print_invite_box("Share this group invite code with trusted participants:", &invite);
             invite.zeroize();
             invite_result?;
             chat_status("Group room is open. Participants can join until you close it.")?;
             Ok(socket)
         }
-        ServerMessage::Error { message } => {
-            bail!("relay error: {}", sanitize_for_terminal(&message))
-        }
-        ServerMessage::DeviceApprovalRequired {
-            public_key,
-            fingerprint,
-            suggested_approval,
-            expires_at,
-        } => device_approval_required(public_key, fingerprint, suggested_approval, expires_at),
+        ServerMessage::Error { message } => bail!("relay error: {}", sanitize_for_terminal(&message)),
         _ => bail!("unexpected relay response"),
     }
 }
 
 async fn join_relay(relay_url: &str, relay_pin: Option<&str>, code: &str, group: bool) -> Result<RelaySocket> {
     validate_relay_code(code)?;
-
     let (mut socket, _) = connect_async(relay_url).await?;
-    if let Some(pin) = relay_pin {
-        verify_relay_pin(&socket, pin)?;
-    }
+    if let Some(pin) = relay_pin { verify_relay_pin(&socket, pin)?; }
     let setup = if group {
-        ClientMessage::GroupJoin {
-            code: code.to_string(),
-            access_token: relay_access_token(),
-            device_auth: device_auth("group_join", Some(code))?,
-        }
+        ClientMessage::GroupJoin { code: code.to_string(), access_token: relay_access_token() }
     } else {
-        ClientMessage::Join {
-            code: code.to_string(),
-            access_token: relay_access_token(),
-            device_auth: device_auth("join", Some(code))?,
-        }
+        ClientMessage::Join { code: code.to_string(), access_token: relay_access_token() }
     };
     send_setup(&mut socket, setup).await?;
 
     match read_setup(&mut socket).await? {
-        ServerMessage::Joined => {
-            chat_status("Joined relay. Establishing end-to-end encryption...")?;
-            Ok(socket)
-        }
-        ServerMessage::GroupJoined => {
-            chat_status("Joined group relay. Establishing end-to-end encryption...")?;
-            Ok(socket)
-        }
-        ServerMessage::Error { message } => {
-            bail!("relay error: {}", sanitize_for_terminal(&message))
-        }
-        ServerMessage::DeviceApprovalRequired {
-            public_key,
-            fingerprint,
-            suggested_approval,
-            expires_at,
-        } => device_approval_required(public_key, fingerprint, suggested_approval, expires_at),
+        ServerMessage::Joined => { chat_status("Joined relay. Establishing end-to-end encryption...")?; Ok(socket) }
+        ServerMessage::GroupJoined => { chat_status("Joined group relay. Establishing end-to-end encryption...")?; Ok(socket) }
+        ServerMessage::Error { message } => bail!("relay error: {}", sanitize_for_terminal(&message)),
         _ => bail!("unexpected relay response"),
     }
-}
-
-fn relay_access_token() -> Option<String> {
-    std::env::var(ACCESS_TOKEN_ENV)
-        .ok()
-        .map(|token| token.trim().to_string())
-        .filter(|token| !token.is_empty())
-}
-
-
-fn device_approval_required(
-    public_key: String,
-    fingerprint: String,
-    suggested_approval: String,
-    expires_at: u64,
-) -> Result<RelaySocket> {
-    bail!(
-        "relay device approval required\nfingerprint: {}\npublic key: {}\nsuggested allowlist entry, expires at Unix time {}:\n{}\nSet GHSTCOM_RELAY_REGISTRATION_TOKEN to auto-register, or ask the relay operator to add the suggested entry to GHSTCOM_RELAY_ALLOWED_DEVICE_KEYS",
-        sanitize_for_terminal(&fingerprint),
-        sanitize_for_terminal(&public_key),
-        expires_at,
-        sanitize_for_terminal(&suggested_approval)
-    )
-}
-
-fn device_auth(action: &str, code: Option<&str>) -> Result<Option<DeviceAuth>> {
-    let signing_key = load_or_create_device_key()?;
-    let public_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes());
-    let nonce = URL_SAFE_NO_PAD.encode(rand::random::<[u8; 16]>());
-    let payload = device_auth_payload(action, code, &nonce);
-    let signature = signing_key.sign(payload.as_bytes());
-
-    Ok(Some(DeviceAuth {
-        public_key,
-        nonce,
-        signature: URL_SAFE_NO_PAD.encode(signature.to_bytes()),
-    }))
-}
-
-fn default_device_approval_expiry() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration + DEVICE_APPROVAL_TTL)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(DEVICE_APPROVAL_TTL.as_secs())
-}
-
-fn device_fingerprint(public_key: &str) -> String {
-    let digest = Sha256::digest(public_key.as_bytes());
-    digest[..8]
-        .chunks(2)
-        .map(|chunk| {
-            chunk
-                .iter()
-                .map(|byte| format!("{byte:02X}"))
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("-")
-}
-
-fn load_or_create_device_key() -> Result<SigningKey> {
-    let path = device_key_path()?;
-    if let Ok(encoded) = fs::read_to_string(&path) {
-        let mut decoded = URL_SAFE_NO_PAD.decode(encoded.trim())?;
-        if decoded.len() != DEVICE_SECRET_BYTES {
-            decoded.zeroize();
-            bail!("device key has invalid length: {}", path.display());
-        }
-        let mut secret = [0_u8; DEVICE_SECRET_BYTES];
-        secret.copy_from_slice(&decoded);
-        decoded.zeroize();
-        let signing_key = SigningKey::from_bytes(&secret);
-        secret.zeroize();
-        return Ok(signing_key);
-    }
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let mut secret = rand::random::<[u8; DEVICE_SECRET_BYTES]>();
-    let encoded = URL_SAFE_NO_PAD.encode(secret);
-    write_device_key(&path, &encoded)?;
-    let signing_key = SigningKey::from_bytes(&secret);
-    secret.zeroize();
-    Ok(signing_key)
-}
-
-fn write_device_key(path: &PathBuf, encoded: &str) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt;
-
-        let mut file = fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(path)?;
-        file.write_all(encoded.as_bytes())?;
-        file.write_all(b"\n")?;
-        return Ok(());
-    }
-
-    #[cfg(not(unix))]
-    {
-        fs::write(path, format!("{encoded}\n"))?;
-        Ok(())
-    }
-}
-
-fn device_key_path() -> Result<PathBuf> {
-    if let Ok(path) = std::env::var("GHSTCOM_DEVICE_KEY_PATH") {
-        let path = path.trim();
-        if !path.is_empty() {
-            return Ok(PathBuf::from(path));
-        }
-    }
-
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| anyhow::anyhow!("HOME or USERPROFILE is required for device key storage"))?;
-    Ok(PathBuf::from(home).join(".ghostcom").join("device.key"))
-}
-
-fn device_auth_payload(action: &str, code: Option<&str>, nonce: &str) -> String {
-    format!(
-        "GhostCom relay device auth v1\n{action}\n{}\n{nonce}",
-        code.unwrap_or("")
-    )
 }
 
 async fn run_noise_chat(

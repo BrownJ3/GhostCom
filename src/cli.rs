@@ -18,7 +18,6 @@ pub enum Command {
         relay: String,
         relay_pin: Option<String>,
     },
-    RelayDevice,
     Call {
         bind: SocketAddr,
         rendezvous: String,
@@ -121,7 +120,6 @@ pub fn parse() -> Result<Command> {
             };
             Ok(Command::RelayJoin { code, relay, relay_pin })
         }
-        "relay-device" => Ok(Command::RelayDevice),
         "call" => {
             let mut bind = "0.0.0.0:7777".parse()?;
             let mut rendezvous = None;
@@ -247,7 +245,7 @@ fn interactive_menu() -> Result<Command> {
                 relay_pin: None,
             })
         }
-        "4" => Ok(Command::RelayDevice),
+        "4" => { bail!("device key management has been removed"); }
         other => bail!("unknown menu option: {other}"),
     }
 }
