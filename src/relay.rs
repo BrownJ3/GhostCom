@@ -759,6 +759,7 @@ enum GroupHostEvent {
 }
 
 async fn run_group_host(socket: RelaySocket, secret: InviteSecret) -> Result<()> {
+    let secret = Arc::new(secret);
     let local_name = prompt_display_name("GroupHost")?;
     let (writer, mut reader) = socket.split();
     let writer = Arc::new(Mutex::new(writer));
@@ -858,7 +859,7 @@ async fn run_group_host(socket: RelaySocket, secret: InviteSecret) -> Result<()>
                                     raw_rx,
                                     writer.clone(),
                                     events_tx.clone(),
-                                    secret.clone(),
+                                    Arc::clone(&secret),
                                     local_name.clone(),
                                 ));
                             }
@@ -970,7 +971,7 @@ async fn run_group_host_peer(
     mut raw_rx: mpsc::Receiver<Vec<u8>>,
     writer: Arc<Mutex<SplitSink<RelaySocket, Message>>>,
     events_tx: mpsc::Sender<GroupHostEvent>,
-    secret: InviteSecret,
+    secret: Arc<InviteSecret>,
     local_name: String,
 ) -> Result<()> {
     let (mut transport, mut handshake_hash) =
@@ -1604,7 +1605,6 @@ impl RelayRole {
     }
 }
 
-#[derive(Clone)]
 struct InviteSecret([u8; INVITE_SECRET_BYTES]);
 
 impl InviteSecret {
