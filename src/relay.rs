@@ -8,6 +8,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signer, SigningKey};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use serde::{Deserialize, Serialize};
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use snow::{Builder, TransportState, params::NoiseParams};
 use std::{
@@ -154,21 +155,21 @@ pub enum RelayRole {
     Joiner,
 }
 
-pub async fn call(relay_url: String) -> Result<()> {
+pub async fn call(relay_url: String, relay_pin: Option<String>) -> Result<()> {
     chat_status("Creating secure invite...")?;
     let secret = InviteSecret::generate();
-    let socket = create_relay(&relay_url, &secret).await?;
+    let socket = create_relay(&relay_url, relay_pin.as_deref(), &secret).await?;
     run_noise_chat(socket, RelayRole::Caller, Some(secret)).await
 }
 
-pub async fn group(relay_url: String) -> Result<()> {
+pub async fn group(relay_url: String, relay_pin: Option<String>) -> Result<()> {
     chat_status("Creating secure group invite...")?;
     let secret = InviteSecret::generate();
-    let socket = create_group_relay(&relay_url, &secret).await?;
+    let socket = create_group_relay(&relay_url, relay_pin.as_deref(), &secret).await?;
     run_group_host(socket, secret).await
 }
 
-pub async fn join(mut code: String, relay_url: String) -> Result<()> {
+pub async fn join(mut code: String, relay_url: String, relay_pin: Option<String>) -> Result<()> {
     chat_status("Joining secure invite...")?;
     let invite = match RelayInvite::parse(&code) {
         Ok(invite) => invite,
@@ -178,7 +179,7 @@ pub async fn join(mut code: String, relay_url: String) -> Result<()> {
         }
     };
     code.zeroize();
-    let socket = join_relay(&relay_url, invite.room_code(), invite.is_group()).await?;
+    let socket = join_relay(&relay_url, relay_pin.as_deref(), invite.room_code(), invite.is_group()).await?;
     if invite.is_group() {
         let Some(secret) = invite.into_secret() else {
             bail!("group invite is missing its authentication secret");
@@ -208,8 +209,35 @@ pub async fn device() -> Result<()> {
     Ok(())
 }
 
-async fn create_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySocket> {
+fn verify_relay_pin(socket: &RelaySocket, pin: &str) -> Result<()> {
+    let pin = pin.trim().to_ascii_lowercase();
+    if pin.len() != 64 || !pin.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("--relay-pin must be a 64-character SHA-256 hex fingerprint");
+    }
+    let tls = match socket.get_ref() {
+        MaybeTlsStream::Rustls(tls) => tls,
+        _ => bail!("relay connection is not TLS — --relay-pin requires a wss:// URL"),
+    };
+    let (_, conn) = tls.get_ref();
+    let leaf = conn
+        .peer_certificates()
+        .and_then(|c| c.first())
+        .ok_or_else(|| anyhow::anyhow!("relay did not present a TLS certificate"))?;
+    let digest = Sha256::digest(leaf.as_ref());
+    let actual: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    if actual != pin {
+        bail!(
+            "relay TLS certificate fingerprint mismatch\n  expected: {pin}\n  actual:   {actual}\nUpdate --relay-pin or verify the relay is legitimate."
+        );
+    }
+    Ok(())
+}
+
+async fn create_relay(relay_url: &str, relay_pin: Option<&str>, secret: &InviteSecret) -> Result<RelaySocket> {
     let (mut socket, _) = connect_async(relay_url).await?;
+    if let Some(pin) = relay_pin {
+        verify_relay_pin(&socket, pin)?;
+    }
     send_setup(
         &mut socket,
         ClientMessage::Create {
@@ -274,8 +302,11 @@ async fn create_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySoc
     }
 }
 
-async fn create_group_relay(relay_url: &str, secret: &InviteSecret) -> Result<RelaySocket> {
+async fn create_group_relay(relay_url: &str, relay_pin: Option<&str>, secret: &InviteSecret) -> Result<RelaySocket> {
     let (mut socket, _) = connect_async(relay_url).await?;
+    if let Some(pin) = relay_pin {
+        verify_relay_pin(&socket, pin)?;
+    }
     send_setup(
         &mut socket,
         ClientMessage::GroupCreate {
@@ -311,10 +342,13 @@ async fn create_group_relay(relay_url: &str, secret: &InviteSecret) -> Result<Re
     }
 }
 
-async fn join_relay(relay_url: &str, code: &str, group: bool) -> Result<RelaySocket> {
+async fn join_relay(relay_url: &str, relay_pin: Option<&str>, code: &str, group: bool) -> Result<RelaySocket> {
     validate_relay_code(code)?;
 
     let (mut socket, _) = connect_async(relay_url).await?;
+    if let Some(pin) = relay_pin {
+        verify_relay_pin(&socket, pin)?;
+    }
     let setup = if group {
         ClientMessage::GroupJoin {
             code: code.to_string(),
@@ -725,6 +759,7 @@ enum GroupHostEvent {
 }
 
 async fn run_group_host(socket: RelaySocket, secret: InviteSecret) -> Result<()> {
+    let secret = Arc::new(secret);
     let local_name = prompt_display_name("GroupHost")?;
     let (writer, mut reader) = socket.split();
     let writer = Arc::new(Mutex::new(writer));
@@ -824,7 +859,7 @@ async fn run_group_host(socket: RelaySocket, secret: InviteSecret) -> Result<()>
                                     raw_rx,
                                     writer.clone(),
                                     events_tx.clone(),
-                                    secret.clone(),
+                                    Arc::clone(&secret),
                                     local_name.clone(),
                                 ));
                             }
@@ -936,7 +971,7 @@ async fn run_group_host_peer(
     mut raw_rx: mpsc::Receiver<Vec<u8>>,
     writer: Arc<Mutex<SplitSink<RelaySocket, Message>>>,
     events_tx: mpsc::Sender<GroupHostEvent>,
-    secret: InviteSecret,
+    secret: Arc<InviteSecret>,
     local_name: String,
 ) -> Result<()> {
     let (mut transport, mut handshake_hash) =
@@ -1422,7 +1457,7 @@ async fn send_host_control(
     let result = writer
         .lock()
         .await
-        .send(Message::Text(text.clone().into()))
+        .send(Message::Text(std::mem::take(&mut text).into()))
         .await;
     text.zeroize();
     result?;
@@ -1435,7 +1470,9 @@ async fn send_setup(socket: &mut RelaySocket, message: ClientMessage) -> Result<
         text.zeroize();
         bail!("relay setup message too large");
     }
-    let result = socket.send(Message::Text(text.clone().into())).await;
+    // Move `text` into the message rather than cloning, so the original memory
+    // is owned by the sink and not duplicated in a clone that outlives zeroize.
+    let result = socket.send(Message::Text(std::mem::take(&mut text).into())).await;
     text.zeroize();
     result?;
     Ok(())
@@ -1494,12 +1531,8 @@ fn format_verification_code(handshake_hash: &[u8]) -> String {
         .join("-")
 }
 
-fn default_relay_name(verification_code: &str) -> &str {
-    if verification_code.as_bytes()[0].is_ascii_hexdigit() {
-        "RelayPeer"
-    } else {
-        "Peer"
-    }
+fn default_relay_name(_verification_code: &str) -> &str {
+    "RelayPeer"
 }
 
 fn format_group_sender(sender_id: u16, sender: &str) -> String {
@@ -1568,7 +1601,6 @@ impl RelayRole {
     }
 }
 
-#[derive(Clone)]
 struct InviteSecret([u8; INVITE_SECRET_BYTES]);
 
 impl InviteSecret {
@@ -1632,11 +1664,17 @@ impl RelayInvite {
     }
 
     fn format(room_code: &str, secret: &InviteSecret) -> String {
-        format!("{room_code}.{}", secret.encode())
+        let mut encoded = secret.encode();
+        let invite = format!("{room_code}.{encoded}");
+        encoded.zeroize();
+        invite
     }
 
     fn format_group(room_code: &str, secret: &InviteSecret) -> String {
-        format!("g:{room_code}.{}", secret.encode())
+        let mut encoded = secret.encode();
+        let invite = format!("g:{room_code}.{encoded}");
+        encoded.zeroize();
+        invite
     }
 
     fn room_code(&self) -> &str {
@@ -1657,14 +1695,14 @@ fn invite_auth_proof(
     handshake_hash: &[u8],
     role_label: &[u8],
 ) -> [u8; INVITE_AUTH_PROOF_BYTES] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"GhostCom relay invite authentication v1");
-    hasher.update(role_label);
-    hasher.update([0]);
-    hasher.update(secret.0);
-    hasher.update(handshake_hash);
-    let digest: [u8; INVITE_AUTH_PROOF_BYTES] = hasher.finalize().into();
-    digest
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = HmacSha256::new_from_slice(&secret.0)
+        .expect("HMAC accepts any key length");
+    mac.update(b"GhostCom relay invite authentication v1\0");
+    mac.update(role_label);
+    mac.update(b"\0");
+    mac.update(handshake_hash);
+    mac.finalize().into_bytes().into()
 }
 
 #[cfg(test)]

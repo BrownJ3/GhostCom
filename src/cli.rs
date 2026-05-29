@@ -7,13 +7,16 @@ const DEFAULT_RELAY_URL: &str = "wss://ghostcom-site.fly.dev/relay";
 pub enum Command {
     RelayCall {
         relay: String,
+        relay_pin: Option<String>,
     },
     RelayGroup {
         relay: String,
+        relay_pin: Option<String>,
     },
     RelayJoin {
         code: String,
         relay: String,
+        relay_pin: Option<String>,
     },
     RelayDevice,
     Call {
@@ -41,6 +44,7 @@ pub fn parse() -> Result<Command> {
     match command.as_str() {
         "relay-call" => {
             let mut relay = DEFAULT_RELAY_URL.to_string();
+            let mut relay_pin = None;
             while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--relay" => {
@@ -48,14 +52,21 @@ pub fn parse() -> Result<Command> {
                             bail!("--relay requires a WebSocket URL");
                         };
                         relay = value;
+                    }
+                    "--relay-pin" => {
+                        let Some(value) = args.next() else {
+                            bail!("--relay-pin requires a SHA-256 hex fingerprint");
+                        };
+                        relay_pin = Some(value);
                     }
                     other => bail!("unknown relay-call option: {other}"),
                 }
             }
-            Ok(Command::RelayCall { relay })
+            Ok(Command::RelayCall { relay, relay_pin })
         }
         "relay-group" => {
             let mut relay = DEFAULT_RELAY_URL.to_string();
+            let mut relay_pin = None;
             while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--relay" => {
@@ -64,14 +75,21 @@ pub fn parse() -> Result<Command> {
                         };
                         relay = value;
                     }
+                    "--relay-pin" => {
+                        let Some(value) = args.next() else {
+                            bail!("--relay-pin requires a SHA-256 hex fingerprint");
+                        };
+                        relay_pin = Some(value);
+                    }
                     other => bail!("unknown relay-group option: {other}"),
                 }
             }
-            Ok(Command::RelayGroup { relay })
+            Ok(Command::RelayGroup { relay, relay_pin })
         }
         "relay-join" => {
             let mut code = None;
             let mut relay = DEFAULT_RELAY_URL.to_string();
+            let mut relay_pin = None;
             while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--relay" => {
@@ -79,6 +97,12 @@ pub fn parse() -> Result<Command> {
                             bail!("--relay requires a WebSocket URL");
                         };
                         relay = value;
+                    }
+                    "--relay-pin" => {
+                        let Some(value) = args.next() else {
+                            bail!("--relay-pin requires a SHA-256 hex fingerprint");
+                        };
+                        relay_pin = Some(value);
                     }
                     other if code.is_none() => code = Some(other.to_string()),
                     other => bail!("unknown relay-join option: {other}"),
@@ -95,7 +119,7 @@ pub fn parse() -> Result<Command> {
                     code
                 }
             };
-            Ok(Command::RelayJoin { code, relay })
+            Ok(Command::RelayJoin { code, relay, relay_pin })
         }
         "relay-device" => Ok(Command::RelayDevice),
         "call" => {
@@ -186,7 +210,7 @@ pub fn parse() -> Result<Command> {
 
 fn print_usage() {
     eprintln!(
-        "GhostCom\n\nUsage:\n  ghstprtcl\n  ghstprtcl relay-call [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-group [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-join [invite-code] [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-device\n  ghstprtcl listen [--bind 0.0.0.0:7777]\n  ghstprtcl connect <host>:7777\n\nAdvanced direct rendezvous:\n  ghstprtcl call --rendezvous wss://your-private-site/rv [--bind 0.0.0.0:7777]\n  ghstprtcl join <invite-code> --rendezvous wss://your-private-site/rv"
+        "GhostCom\n\nStart here:\n  ghstprtcl\n\nAdvanced shortcuts:\n  ghstprtcl relay-call [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-group [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-join [invite-code] [--relay {DEFAULT_RELAY_URL}]\n  ghstprtcl relay-device\n  ghstprtcl listen [--bind 0.0.0.0:7777]\n  ghstprtcl connect <host>:7777\n\nAdvanced direct rendezvous:\n  ghstprtcl call --rendezvous wss://your-private-site/rv [--bind 0.0.0.0:7777]\n  ghstprtcl join <invite-code> --rendezvous wss://your-private-site/rv"
     );
 }
 
@@ -199,14 +223,17 @@ fn interactive_menu() -> Result<Command> {
     println!("  1  Start secure chat");
     println!("  2  Start secure group chat");
     println!("  3  Join secure chat");
+    println!("  4  Show this device approval key");
     println!();
 
     match prompt("Choose [1]: ")?.trim() {
         "" | "1" => Ok(Command::RelayCall {
             relay: DEFAULT_RELAY_URL.to_string(),
+            relay_pin: None,
         }),
         "2" => Ok(Command::RelayGroup {
             relay: DEFAULT_RELAY_URL.to_string(),
+            relay_pin: None,
         }),
         "3" => {
             let code = prompt("Paste invite code: ")?;
@@ -217,8 +244,10 @@ fn interactive_menu() -> Result<Command> {
             Ok(Command::RelayJoin {
                 code,
                 relay: DEFAULT_RELAY_URL.to_string(),
+                relay_pin: None,
             })
         }
+        "4" => Ok(Command::RelayDevice),
         other => bail!("unknown menu option: {other}"),
     }
 }
